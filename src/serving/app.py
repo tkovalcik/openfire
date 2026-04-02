@@ -139,6 +139,34 @@ def create_app(
         log_event("model_unavailable", path=str(request.url.path), detail=str(exc))
         return _model_unavailable_response(request.app.state.service_config)
 
+    @app.get("/")
+    async def root(request: Request) -> JSONResponse:
+        config: ServiceConfig = request.app.state.service_config
+        service: PredictionService | None = getattr(request.app.state, "prediction_service", None)
+        status = "ok" if service is not None else "degraded"
+        model_source = service.loaded_model.model_source if service is not None else config.model_source
+        model_version = service.loaded_model.model_version if service is not None else None
+        return JSONResponse(
+            status_code=200,
+            content={
+                "service": "openfire-api",
+                "message": "OpenFire Serving API",
+                "status": status,
+                "runtime_mode": config.runtime_mode,
+                "model_loaded": service is not None,
+                "model_source": model_source,
+                "model_version": model_version,
+                "endpoints": {
+                    "health": "/health",
+                    "metadata": "/metadata",
+                    "demo_geojson": "/demo/geojson",
+                    "predict": "/predict",
+                    "predict_geojson": "/predict_geojson",
+                    "docs": "/docs",
+                },
+            },
+        )
+
     @app.get("/health", response_model=HealthResponse)
     async def health(request: Request) -> HealthResponse:
         config: ServiceConfig = request.app.state.service_config
