@@ -1,0 +1,302 @@
+name: cd
+
+on:
+  # "Merge to main" materializes as a push to main in GitHub Actions.
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      gcp_project_id:
+        description: Optional override for the GCP project ID
+        required: false
+        type: string
+      gcp_region:
+        description: Optional override for the GCP region
+        required: false
+        type: string
+      artifact_registry_repository:
+        description: Optional override for the Artifact Registry repository name
+        required: false
+        type: string
+      cloud_run_service:
+        description: Optional override for the Cloud Run service name
+        required: false
+        type: string
+      image_tag:
+        description: Optional image tag override. Defaults to the commit SHA.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cd-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Recommended repository variables:
+  #   GCP_PROJECT_ID
+  #   GCP_REGION
+  #   ARTIFACT_REGISTRY_REPOSITORY
+  #   CLOUD_RUN_SERVICE
+  #   CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT
+  #   OPENFIRE_GCS_BUCKET
+  #   OPENFIRE_RUNTIME_MODE
+  #   OPENFIRE_MODEL_SOURCE
+  #   OPENFIRE_MODEL_URI
+  #   OPENFIRE_DEMO_MODEL_URI
+  #   OPENFIRE_DEMO_GEOJSON_URI
+  #   OPENFIRE_CORS_ALLOWED_ORIGINS
+  #   OPENFIRE_MAX_BATCH_SIZE
+  #   MLFLOW_REGISTERED_MODEL_NAME
+  #   MLFLOW_MODEL_STAGE
+  #   MLFLOW_EXPERIMENT_NAME
+  #   CLOUD_RUN_ALLOW_UNAUTHENTICATED
+  #   GCP_WORKLOAD_IDENTITY_PROVIDER
+  #   GCP_DEPLOYER_SERVICE_ACCOUNT
+  # Optional repository variables:
+  #   CLOUD_RUN_SECRET_MLFLOW_TRACKING_URI
+  #   CLOUD_RUN_SECRET_OPENFIRE_MODEL_URI
+  GCP_PROJECT_ID: ${{ inputs.gcp_project_id || vars.GCP_PROJECT_ID }}
+  GCP_REGION: ${{ inputs.gcp_region || vars.GCP_REGION || 'us-central1' }}
+  ARTIFACT_REGISTRY_REPOSITORY: ${{ inputs.artifact_registry_repository || vars.ARTIFACT_REGISTRY_REPOSITORY }}
+  CLOUD_RUN_SERVICE: ${{ inputs.cloud_run_service || vars.CLOUD_RUN_SERVICE }}
+  CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT: ${{ vars.CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT }}
+  OPENFIRE_GCS_BUCKET: ${{ vars.OPENFIRE_GCS_BUCKET }}
+  OPENFIRE_RUNTIME_MODE: ${{ vars.OPENFIRE_RUNTIME_MODE || 'live' }}
+  OPENFIRE_MODEL_SOURCE: ${{ vars.OPENFIRE_MODEL_SOURCE || 'gcs' }}
+  OPENFIRE_MODEL_URI: ${{ vars.OPENFIRE_MODEL_URI }}
+  OPENFIRE_DEMO_MODEL_URI: ${{ vars.OPENFIRE_DEMO_MODEL_URI }}
+  OPENFIRE_DEMO_GEOJSON_URI: ${{ vars.OPENFIRE_DEMO_GEOJSON_URI }}
+  OPENFIRE_CORS_ALLOWED_ORIGINS: ${{ vars.OPENFIRE_CORS_ALLOWED_ORIGINS }}
+  OPENFIRE_MAX_BATCH_SIZE: ${{ vars.OPENFIRE_MAX_BATCH_SIZE || '1000' }}
+  MLFLOW_REGISTERED_MODEL_NAME: ${{ vars.MLFLOW_REGISTERED_MODEL_NAME || 'openfire-baseline' }}
+  MLFLOW_MODEL_STAGE: ${{ vars.MLFLOW_MODEL_STAGE || 'production' }}
+  MLFLOW_EXPERIMENT_NAME: ${{ vars.MLFLOW_EXPERIMENT_NAME || 'openfire' }}
+  CLOUD_RUN_ALLOW_UNAUTHENTICATED: ${{ vars.CLOUD_RUN_ALLOW_UNAUTHENTICATED || 'false' }}
+  CLOUD_RUN_SECRET_MLFLOW_TRACKING_URI: ${{ vars.CLOUD_RUN_SECRET_MLFLOW_TRACKING_URI }}
+  CLOUD_RUN_SECRET_OPENFIRE_MODEL_URI: ${{ vars.CLOUD_RUN_SECRET_OPENFIRE_MODEL_URI }}
+  GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+  GCP_DEPLOYER_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+  IMAGE_NAME: openfire-api
+  IMAGE_TAG_OVERRIDE: ${{ inputs.image_tag }}
+
+jobs:
+  build-push-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_vars=(
+            GCP_PROJECT_ID
+            GCP_REGION
+            ARTIFACT_REGISTRY_REPOSITORY
+            CLOUD_RUN_SERVICE
+            CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT
+            OPENFIRE_GCS_BUCKET
+            OPENFIRE_RUNTIME_MODE
+            OPENFIRE_MODEL_SOURCE
+            GCP_WORKLOAD_IDENTITY_PROVIDER
+            GCP_DEPLOYER_SERVICE_ACCOUNT
+          )
+
+          for name in "${required_vars[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required repository variable or workflow input: ${name}"
+              exit 1
+            fi
+          done
+
+          case "${OPENFIRE_RUNTIME_MODE}" in
+            demo|live)
+              ;;
+            *)
+              echo "::error::OPENFIRE_RUNTIME_MODE must be one of: demo, live."
+              exit 1
+              ;;
+          esac
+
+          case "${OPENFIRE_MODEL_SOURCE}" in
+            gcs)
+              if [[ "${OPENFIRE_RUNTIME_MODE}" == "demo" ]]; then
+                if [[ -z "${OPENFIRE_MODEL_URI:-}" && -z "${OPENFIRE_DEMO_MODEL_URI:-}" && -z "${CLOUD_RUN_SECRET_OPENFIRE_MODEL_URI:-}" ]]; then
+                  echo "::error::OPENFIRE_MODEL_SOURCE=gcs in demo mode requires OPENFIRE_DEMO_MODEL_URI, OPENFIRE_MODEL_URI, or CLOUD_RUN_SECRET_OPENFIRE_MODEL_URI."
+                  exit 1
+                fi
+                if [[ -z "${OPENFIRE_DEMO_GEOJSON_URI:-}" ]]; then
+                  echo "::error::OPENFIRE_RUNTIME_MODE=demo requires OPENFIRE_DEMO_GEOJSON_URI."
+                  exit 1
+                fi
+              elif [[ -z "${OPENFIRE_MODEL_URI:-}" && -z "${CLOUD_RUN_SECRET_OPENFIRE_MODEL_URI:-}" ]]; then
+                echo "::error::OPENFIRE_MODEL_SOURCE=gcs requires either OPENFIRE_MODEL_URI or CLOUD_RUN_SECRET_OPENFIRE_MODEL_URI."
+                exit 1
+              fi
+              ;;
+            mlflow)
+              if [[ -z "${CLOUD_RUN_SECRET_MLFLOW_TRACKING_URI:-}" ]]; then
+                echo "::error::OPENFIRE_MODEL_SOURCE=mlflow requires CLOUD_RUN_SECRET_MLFLOW_TRACKING_URI."
+                exit 1
+              fi
+              ;;
+            local)
+              echo "::error::OPENFIRE_MODEL_SOURCE=local is not appropriate for Cloud Run deployments."
+              exit 1
+              ;;
+            *)
+              echo "::error::OPENFIRE_MODEL_SOURCE must be one of: gcs, mlflow, local."
+              exit 1
+              ;;
+          esac
+
+      - name: Authenticate to Google Cloud via Workload Identity Federation
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push API image
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE_TAG="${IMAGE_TAG_OVERRIDE:-${GITHUB_SHA}}"
+          IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPOSITORY}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+          echo "IMAGE_URI=${IMAGE_URI}" >> "${GITHUB_ENV}"
+          echo "image_uri=${IMAGE_URI}" >> "${GITHUB_OUTPUT}"
+
+          docker buildx build \
+            --platform linux/amd64 \
+            --file docker/Dockerfile.api \
+            --tag "${IMAGE_URI}" \
+            --push \
+            .
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${CLOUD_RUN_ALLOW_UNAUTHENTICATED}" == "true" ]]; then
+            AUTH_FLAG="--allow-unauthenticated"
+          else
+            AUTH_FLAG="--no-allow-unauthenticated"
+          fi
+
+          ENV_BINDINGS=(
+            "GCP_PROJECT_ID=${GCP_PROJECT_ID}"
+            "OPENFIRE_GCS_BUCKET=${OPENFIRE_GCS_BUCKET}"
+            "OPENFIRE_RUNTIME_MODE=${OPENFIRE_RUNTIME_MODE}"
+            "OPENFIRE_MODEL_SOURCE=${OPENFIRE_MODEL_SOURCE}"
+            "OPENFIRE_MAX_BATCH_SIZE=${OPENFIRE_MAX_BATCH_SIZE}"
+            "MLFLOW_REGISTERED_MODEL_NAME=${MLFLOW_REGISTERED_MODEL_NAME}"
+            "MLFLOW_MODEL_STAGE=${MLFLOW_MODEL_STAGE}"
+            "MLFLOW_EXPERIMENT_NAME=${MLFLOW_EXPERIMENT_NAME}"
+          )
+
+          if [[ -n "${OPENFIRE_MODEL_URI:-}" && -z "${CLOUD_RUN_SECRET_OPENFIRE_MODEL_URI:-}" ]]; then
+            ENV_BINDINGS+=("OPENFIRE_MODEL_URI=${OPENFIRE_MODEL_URI}")
+          fi
+          if [[ -n "${OPENFIRE_DEMO_MODEL_URI:-}" ]]; then
+            ENV_BINDINGS+=("OPENFIRE_DEMO_MODEL_URI=${OPENFIRE_DEMO_MODEL_URI}")
+          fi
+          if [[ -n "${OPENFIRE_DEMO_GEOJSON_URI:-}" ]]; then
+            ENV_BINDINGS+=("OPENFIRE_DEMO_GEOJSON_URI=${OPENFIRE_DEMO_GEOJSON_URI}")
+          fi
+          if [[ -n "${OPENFIRE_CORS_ALLOWED_ORIGINS:-}" ]]; then
+            ENV_BINDINGS+=("OPENFIRE_CORS_ALLOWED_ORIGINS=${OPENFIRE_CORS_ALLOWED_ORIGINS}")
+          fi
+
+          SECRET_BINDINGS=()
+          if [[ -n "${CLOUD_RUN_SECRET_MLFLOW_TRACKING_URI:-}" ]]; then
+            SECRET_BINDINGS+=("MLFLOW_TRACKING_URI=${CLOUD_RUN_SECRET_MLFLOW_TRACKING_URI}:latest")
+          fi
+          if [[ -n "${CLOUD_RUN_SECRET_OPENFIRE_MODEL_URI:-}" ]]; then
+            SECRET_BINDINGS+=("OPENFIRE_MODEL_URI=${CLOUD_RUN_SECRET_OPENFIRE_MODEL_URI}:latest")
+          fi
+
+          DEPLOY_ARGS=(
+            run deploy "${CLOUD_RUN_SERVICE}"
+            "--image=${IMAGE_URI}"
+            "--project=${GCP_PROJECT_ID}"
+            "--region=${GCP_REGION}"
+            "--platform=managed"
+            "--port=8000"
+            "--cpu=1"
+            "--memory=1Gi"
+            "--concurrency=20"
+            "--timeout=60s"
+            "--min-instances=0"
+            "--max-instances=10"
+            "--execution-environment=gen2"
+            "--service-account=${CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT}"
+            "${AUTH_FLAG}"
+            "--set-env-vars=$(IFS=,; echo "${ENV_BINDINGS[*]}")"
+          )
+
+          if (( ${#SECRET_BINDINGS[@]} > 0 )); then
+            DEPLOY_ARGS+=("--update-secrets=$(IFS=,; echo "${SECRET_BINDINGS[*]}")")
+          fi
+
+          gcloud "${DEPLOY_ARGS[@]}"
+
+          SERVICE_URL="$(gcloud run services describe "${CLOUD_RUN_SERVICE}" \
+            --project="${GCP_PROJECT_ID}" \
+            --region="${GCP_REGION}" \
+            --format='value(status.url)')"
+
+          echo "service_url=${SERVICE_URL}" >> "${GITHUB_OUTPUT}"
+          echo "SERVICE_URL=${SERVICE_URL}" >> "${GITHUB_ENV}"
+
+      - name: Verify deployed service health
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${CLOUD_RUN_ALLOW_UNAUTHENTICATED}" == "true" ]]; then
+            curl --fail --show-error --silent "${SERVICE_URL}/health"
+          else
+            curl --fail --show-error --silent \
+              -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+              "${SERVICE_URL}/health"
+          fi
+
+      - name: Summarize deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### OpenFire CD"
+            echo ""
+            echo "- Image: \`${IMAGE_URI}\`"
+            echo "- Cloud Run service: \`${CLOUD_RUN_SERVICE}\`"
+            echo "- URL: \`${SERVICE_URL}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
