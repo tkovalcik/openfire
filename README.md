@@ -57,8 +57,8 @@ Version defaults:
 Create `.env` from `.env.example` and populate:
 
 ```dotenv
-GCP_PROJECT_ID=MSDS603-MLOps-Project
-OPENFIRE_GCS_BUCKET=openfire
+GCP_PROJECT_ID=
+OPENFIRE_GCS_BUCKET=
 OPENFIRE_STORAGE_ROOT_PREFIX=openfire
 OPENFIRE_DATASET_PREFIX=datasets
 OPENFIRE_FEATURE_PREFIX=features
@@ -82,7 +82,7 @@ OPENFIRE_MODEL_LOAD_BACKOFF_SECONDS=2.0
 MLFLOW_TRACKING_URI=
 MLFLOW_REGISTERED_MODEL_NAME=openfire-baseline
 MLFLOW_MODEL_STAGE=production
-MLFLOW_EXPERIMENT_NAME=openfire
+MLFLOW_EXPERIMENT_NAME=team-project
 
 GOOGLE_APPLICATION_CREDENTIALS=
 ```
@@ -420,6 +420,39 @@ The GitHub Actions weekly inference workflow is manual-only on this branch.
 - the branch does not yet contain a complete Earth Engine extractor and labeler path
 - manual `workflow_dispatch` with a frozen or pre-extracted feature CSV is the supported demo-safe
   path
+
+## Course MLflow Team Server
+
+The course MLflow requirement is intentionally handled as a **separate Compute Engine VM** from the
+deployed OpenFire demo.
+
+- Cloud Run demo serving stays `OPENFIRE_MODEL_SOURCE=gcs`
+- the MLflow VM is used for experiment tracking and shared team runs
+- the VM uses SQLite and local VM artifacts because that is what the course requirement expects
+
+Course-simple MLflow server shape:
+
+- VM name: `mlflow-server`
+- zone: `us-central1-a`
+- machine type: `e2-small`
+- OS: Ubuntu 22.04
+- MLflow UI: `http://EXTERNAL_IP:5000`
+- current team MLflow URL: `http://34.58.62.126:5000`
+
+Do not point the deployed Cloud Run demo at MLflow. Keep serving on the frozen GCS-backed demo
+artifacts, and use MLflow only for training and experiment tracking.
+
+Full step-by-step instructions live in
+[docs/mlflow-team-server-runbook.md](/Users/sebastiansteen/Desktop/MSDS/MLOps/openfire/docs/mlflow-team-server-runbook.md).
+
+To smoke-test remote tracking after the VM is up:
+
+```bash
+set -a
+source .env
+set +a
+conda run -n mlop python scripts/mlflow_remote_smoke.py
+```
 
 ## Minimal Manual GCP Setup
 
