@@ -14,7 +14,7 @@ try:
 except ImportError:  # pragma: no cover - exercised by python -m src...
     from src.common.storage import StorageClient, normalize_storage_uri
 
-from .weather_features import WEATHER_OUTPUT_COLUMNS, WINDOW_END_COLUMN, WINDOW_START_COLUMN
+from .weather_features import WINDOW_END_COLUMN, WINDOW_START_COLUMN
 
 
 LOGGER = logging.getLogger(__name__)
