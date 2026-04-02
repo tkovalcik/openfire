@@ -1,0 +1,1 @@
+"""OpenFire source package."""
