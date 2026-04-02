@@ -1,0 +1,59 @@
+# syntax=docker/dockerfile:1.7
+
+FROM python:3.11-slim AS builder
+
+# Keep Python deterministic and quiet during image builds.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    VIRTUAL_ENV=/opt/venv
+
+WORKDIR /build
+
+# Build dependencies are only needed in this stage. The runtime image stays smaller.
+RUN python -m venv "${VIRTUAL_ENV}"
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+
+COPY docker/requirements.api.txt /build/requirements.api.txt
+
+# Install pinned dependencies into a virtualenv that will be copied into the runtime image.
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install -r /build/requirements.api.txt
+
+
+FROM python:3.11-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:${PATH}" \
+    PYTHONPATH=/app \
+    PORT=8000 \
+    OPENFIRE_MAX_BATCH_SIZE=1000
+
+WORKDIR /app
+
+# Use a fixed non-root UID/GID so the container runs safely on Cloud Run and locally.
+RUN groupadd --system --gid 10001 openfire && \
+    useradd --system --uid 10001 --gid 10001 --create-home --home-dir /home/openfire openfire
+
+# Copy only what the API actually needs: the virtualenv, application source, and optionally model files.
+COPY --from=builder /opt/venv /opt/venv
+COPY src /app/src
+
+# Create directories commonly mounted at runtime. Chown once so the final image stays non-root.
+RUN mkdir -p /app/artifacts /app/.cache && \
+    chown -R openfire:openfire /app /home/openfire
+
+USER openfire
+
+EXPOSE 8000
+
+# Healthcheck uses Python stdlib instead of curl/wget to avoid extra packages in the final image.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD python -c "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)); raise SystemExit(0 if data.get('status') in {'ok','degraded'} else 1)"
+
+# Single-process uvicorn keeps the container predictable and Cloud Run friendly.
+CMD ["uvicorn", "src.serving.app:app", "--host", "0.0.0.0", "--port", "8000"]

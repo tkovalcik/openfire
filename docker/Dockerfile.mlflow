@@ -1,0 +1,51 @@
+# syntax=docker/dockerfile:1.7
+
+FROM python:3.11-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    VIRTUAL_ENV=/opt/venv
+
+WORKDIR /build
+
+RUN python -m venv "${VIRTUAL_ENV}"
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+
+COPY docker/requirements.mlflow.txt /build/requirements.mlflow.txt
+
+# Keep the MLflow image separate from the API image so serving does not inherit DB/GCS server dependencies.
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install -r /build/requirements.mlflow.txt
+
+
+FROM python:3.11-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:${PATH}" \
+    MLFLOW_HOST=0.0.0.0 \
+    MLFLOW_PORT=5000
+
+WORKDIR /app
+
+RUN groupadd --system --gid 10002 mlflow && \
+    useradd --system --uid 10002 --gid 10002 --create-home --home-dir /home/mlflow mlflow
+
+COPY --from=builder /opt/venv /opt/venv
+
+RUN mkdir -p /app/mlruns /app/.cache && \
+    chown -R mlflow:mlflow /app /home/mlflow
+
+USER mlflow
+
+EXPOSE 5000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/', timeout=3); raise SystemExit(0)"
+
+# BACKEND_STORE_URI and ARTIFACTS_DESTINATION should be supplied at runtime.
+CMD ["sh", "-c", "mlflow server --host ${MLFLOW_HOST} --port ${MLFLOW_PORT} --backend-store-uri ${BACKEND_STORE_URI} --artifacts-destination ${ARTIFACTS_DESTINATION}"]

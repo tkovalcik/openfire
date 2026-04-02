@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  # Run on every pull request and every branch push, and allow manual reruns.
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Cancel stale CI runs on the same ref so feedback stays current.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            docker/requirements.api.txt
+
+      - name: Install CI dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          # The repo does not currently expose a single pyproject/requirements-dev file,
+          # so CI installs the pinned API/runtime set plus test/lint dependencies.
+          python -m pip install -r docker/requirements.api.txt pyarrow pytest ruff
+
+      - name: Run Ruff
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruff check src tests
+
+      - name: Run pytest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest
