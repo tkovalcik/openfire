@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenFire Risk Viewer</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-block">
+          <p class="eyebrow">OpenFire</p>
+          <h1>Wildfire Risk Layer</h1>
+          <p class="lede">
+            Static-first Leaflet viewer for inspecting wildfire risk probabilities and lightweight
+            model metadata.
+          </p>
+        </div>
+
+        <section class="panel">
+          <h2>Model Metadata</h2>
+          <dl class="metadata-grid">
+            <div>
+              <dt>Model version</dt>
+              <dd id="meta-model-version">Loading...</dd>
+            </div>
+            <div>
+              <dt>Inference date</dt>
+              <dd id="meta-inference-date">Loading...</dd>
+            </div>
+            <div>
+              <dt>Data window</dt>
+              <dd id="meta-data-window">Loading...</dd>
+            </div>
+            <div>
+              <dt>Source mode</dt>
+              <dd id="meta-source-mode">Loading...</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="panel">
+          <h2>Legend</h2>
+          <div id="legend" class="legend"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Status</h2>
+          <p id="status-message" class="status-message">Loading map layer...</p>
+        </section>
+      </aside>
+
+      <section class="map-shell">
+        <div id="map" aria-label="OpenFire wildfire risk map"></div>
+      </section>
+    </main>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script src="./config.js"></script>
+    <script src="./app.js"></script>
+  </body>
+  </html>

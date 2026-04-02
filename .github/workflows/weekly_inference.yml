@@ -1,0 +1,376 @@
+name: weekly_inference
+
+on:
+  # Manual-only on this branch. Scheduled automation is intentionally disabled until the
+  # Earth Engine extractor and labeler are fully implemented and validated.
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: Optional override for the inference window start date (YYYY-MM-DD)
+        required: false
+        type: string
+      end_date:
+        description: Optional override for the inference window end date (YYYY-MM-DD)
+        required: false
+        type: string
+      aoi_config_path:
+        description: Optional override for the AOI config path committed in the repo
+        required: false
+        type: string
+      feature_input_uri:
+        description: Optional pre-extracted feature CSV URI. If set, Earth Engine extraction is skipped.
+        required: false
+        type: string
+      reference_dataset_uri:
+        description: Optional override for the drift reference dataset URI
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: weekly-inference
+  cancel-in-progress: false
+
+env:
+  # Recommended repository variables:
+  #   GCP_PROJECT_ID
+  #   GCP_REGION
+  #   OPENFIRE_GCS_BUCKET
+  #   OPENFIRE_MODEL_SOURCE
+  #   OPENFIRE_MODEL_URI
+  #   OPENFIRE_AOI_CONFIG_PATH
+  #   WEEKLY_REFERENCE_DATASET_URI
+  #   OPENFIRE_WEEKLY_OUTPUT_PREFIX
+  #   GCP_WORKLOAD_IDENTITY_PROVIDER
+  #   GCP_DEPLOYER_SERVICE_ACCOUNT
+  # Optional repository variables:
+  #   MLFLOW_TRACKING_URI
+  #   MLFLOW_REGISTERED_MODEL_NAME
+  #   MLFLOW_MODEL_STAGE
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+  OPENFIRE_GCS_BUCKET: ${{ vars.OPENFIRE_GCS_BUCKET }}
+  OPENFIRE_MODEL_SOURCE: ${{ vars.OPENFIRE_MODEL_SOURCE || 'gcs' }}
+  OPENFIRE_MODEL_URI: ${{ vars.OPENFIRE_MODEL_URI }}
+  MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}
+  MLFLOW_REGISTERED_MODEL_NAME: ${{ vars.MLFLOW_REGISTERED_MODEL_NAME || 'openfire-baseline' }}
+  MLFLOW_MODEL_STAGE: ${{ vars.MLFLOW_MODEL_STAGE || 'production' }}
+  OPENFIRE_AOI_CONFIG_PATH: ${{ inputs.aoi_config_path || vars.OPENFIRE_AOI_CONFIG_PATH }}
+  FEATURE_INPUT_URI: ${{ inputs.feature_input_uri || vars.OPENFIRE_WEEKLY_FEATURE_INPUT_URI }}
+  REFERENCE_DATASET_URI: ${{ inputs.reference_dataset_uri || vars.WEEKLY_REFERENCE_DATASET_URI }}
+  OUTPUT_PREFIX: ${{ vars.OPENFIRE_WEEKLY_OUTPUT_PREFIX || 'openfire/monitoring/reports/weekly-inference' }}
+  GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+  GCP_DEPLOYER_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+
+jobs:
+  weekly-inference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate workflow configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_vars=(
+            GCP_PROJECT_ID
+            GCP_REGION
+            OPENFIRE_GCS_BUCKET
+            OPENFIRE_MODEL_SOURCE
+            REFERENCE_DATASET_URI
+            GCP_WORKLOAD_IDENTITY_PROVIDER
+            GCP_DEPLOYER_SERVICE_ACCOUNT
+          )
+
+          for name in "${required_vars[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required repository variable or workflow input: ${name}"
+              exit 1
+            fi
+          done
+
+          if [[ -z "${FEATURE_INPUT_URI:-}" ]]; then
+            if [[ -z "${OPENFIRE_AOI_CONFIG_PATH:-}" ]]; then
+              echo "::error::Set OPENFIRE_AOI_CONFIG_PATH or provide feature_input_uri."
+              exit 1
+            fi
+            if [[ ! -f "${OPENFIRE_AOI_CONFIG_PATH}" ]]; then
+              echo "::error::AOI config file not found at ${OPENFIRE_AOI_CONFIG_PATH}"
+              exit 1
+            fi
+            if [[ ! -f "src/data_pipeline/ee_extract.py" ]]; then
+              echo "::error::Weekly extraction requires src/data_pipeline/ee_extract.py, but it is not present in this branch."
+              exit 1
+            fi
+          fi
+
+          case "${OPENFIRE_MODEL_SOURCE}" in
+            gcs)
+              if [[ -z "${OPENFIRE_MODEL_URI:-}" ]]; then
+                echo "::error::OPENFIRE_MODEL_SOURCE=gcs requires OPENFIRE_MODEL_URI."
+                exit 1
+              fi
+              ;;
+            mlflow)
+              if [[ -z "${MLFLOW_TRACKING_URI:-}" ]]; then
+                echo "::error::OPENFIRE_MODEL_SOURCE=mlflow requires MLFLOW_TRACKING_URI."
+                exit 1
+              fi
+              ;;
+            local)
+              echo "::error::OPENFIRE_MODEL_SOURCE=local is not appropriate for the scheduled inference workflow."
+              exit 1
+              ;;
+            *)
+              echo "::error::OPENFIRE_MODEL_SOURCE must be one of: gcs, mlflow, local."
+              exit 1
+              ;;
+          esac
+
+      - name: Authenticate to Google Cloud via Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install weekly inference dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          # Weekly inference needs the API/runtime dependencies plus Earth Engine and Evidently.
+          python -m pip install -r docker/requirements.api.txt pyarrow earthengine-api "evidently==0.4.39"
+
+      - name: Compute run window and output paths
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${{ inputs.start_date }}" ]]; then
+            START_DATE="${{ inputs.start_date }}"
+          else
+            START_DATE="$(date -u -d '8 days ago' +%F)"
+          fi
+
+          if [[ -n "${{ inputs.end_date }}" ]]; then
+            END_DATE="${{ inputs.end_date }}"
+          else
+            END_DATE="$(date -u -d '1 day ago' +%F)"
+          fi
+
+          RUN_ID="weekly-$(date -u +%Y%m%dT%H%M%SZ)"
+          RUN_DIR="${RUNNER_TEMP}/openfire-weekly/${RUN_ID}"
+          GCS_OUTPUT_URI="gs://${OPENFIRE_GCS_BUCKET}/${OUTPUT_PREFIX}/${RUN_ID}"
+
+          mkdir -p "${RUN_DIR}"
+
+          echo "START_DATE=${START_DATE}" >> "${GITHUB_ENV}"
+          echo "END_DATE=${END_DATE}" >> "${GITHUB_ENV}"
+          echo "RUN_ID=${RUN_ID}" >> "${GITHUB_ENV}"
+          echo "RUN_DIR=${RUN_DIR}" >> "${GITHUB_ENV}"
+          echo "GCS_OUTPUT_URI=${GCS_OUTPUT_URI}" >> "${GITHUB_ENV}"
+
+      - name: Acquire feature CSV
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${FEATURE_INPUT_URI:-}" ]]; then
+            echo "Using pre-extracted feature CSV from ${FEATURE_INPUT_URI}"
+            gcloud storage cp "${FEATURE_INPUT_URI}" "${RUN_DIR}/features.csv"
+          else
+            echo "Running Earth Engine extraction"
+            PYTHONPATH=. python -m src.data_pipeline.ee_extract \
+              --aoi "${OPENFIRE_AOI_CONFIG_PATH}" \
+              --start "${START_DATE}" \
+              --end "${END_DATE}" \
+              --out "${RUN_DIR}/features.csv"
+          fi
+
+      - name: Enrich features with Open-Meteo weather
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=src python -m data_pipeline.weather_features \
+            --input-uri "local://${RUN_DIR}/features.csv" \
+            --output-uri "local://${RUN_DIR}/features_weather.csv" \
+            --location-mode aoi_centroid
+
+      - name: Run batch inference and emit GeoJSON
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=src python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          import numpy as np
+          import pandas as pd
+
+          from common.storage import StorageClient
+          from config.settings import get_settings
+          from serving.model_loader import ServiceConfig, load_active_model
+
+          run_dir = Path(os.environ["RUN_DIR"])
+          input_path = run_dir / "features_weather.csv"
+          predictions_csv_path = run_dir / "predictions.csv"
+          geojson_path = run_dir / "predictions.geojson"
+
+          settings = get_settings()
+          storage = StorageClient.from_settings(settings)
+          loaded = load_active_model(ServiceConfig.from_env(), storage=storage, settings=settings)
+
+          frame = pd.read_csv(input_path)
+          feature_frame = frame[loaded.feature_columns].copy()
+
+          if hasattr(loaded.model, "predict_proba"):
+            probabilities = loaded.model.predict_proba(feature_frame)[:, 1]
+          elif hasattr(loaded.model, "decision_function"):
+            scores = loaded.model.decision_function(feature_frame)
+            probabilities = 1.0 / (1.0 + np.exp(-scores))
+          else:
+            raise RuntimeError("Loaded model does not support probability inference.")
+
+          frame["probability"] = probabilities.astype(float)
+          frame["predicted_label"] = (frame["probability"] >= loaded.decision_threshold).astype(int)
+          frame["model_version"] = loaded.model_version
+          frame["model_source"] = loaded.model_source
+          frame.to_csv(predictions_csv_path, index=False)
+
+          features = []
+          for row in frame.to_dict(orient="records"):
+            features.append(
+              {
+                "type": "Feature",
+                "geometry": {
+                  "type": "Point",
+                  "coordinates": [row["longitude"], row["latitude"]],
+                },
+                "properties": {
+                  key: value
+                  for key, value in row.items()
+                  if key not in {"longitude", "latitude"}
+                },
+              }
+            )
+
+          geojson_path.write_text(
+            json.dumps({"type": "FeatureCollection", "features": features}, indent=2),
+            encoding="utf-8",
+          )
+          PY
+
+      - name: Run Evidently drift report
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=src python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          import pandas as pd
+          from evidently.metric_preset import DataDriftPreset
+          from evidently.report import Report
+
+          from common.storage import StorageClient
+          from config.settings import get_settings
+
+          run_dir = Path(os.environ["RUN_DIR"])
+          reference_uri = os.environ["REFERENCE_DATASET_URI"]
+          predictions_path = run_dir / "predictions.csv"
+          report_html_path = run_dir / "drift_report.html"
+          report_json_path = run_dir / "drift_report_metadata.json"
+
+          settings = get_settings()
+          storage = StorageClient.from_settings(settings)
+          if reference_uri.endswith(".parquet"):
+            reference = storage.read_parquet(reference_uri)
+          else:
+            reference = storage.read_csv(reference_uri)
+
+          current = pd.read_csv(predictions_path)
+          common_numeric_columns = [
+            column
+            for column in current.columns
+            if column in reference.columns
+            and pd.api.types.is_numeric_dtype(current[column])
+            and pd.api.types.is_numeric_dtype(reference[column])
+          ]
+          if not common_numeric_columns:
+            raise RuntimeError("No common numeric columns were found for the Evidently drift report.")
+
+          report = Report(metrics=[DataDriftPreset()])
+          report.run(
+            reference_data=reference[common_numeric_columns],
+            current_data=current[common_numeric_columns],
+          )
+          report.save_html(str(report_html_path))
+
+          report_json_path.write_text(
+            json.dumps(
+              {
+                "reference_dataset_uri": reference_uri,
+                "current_predictions_path": str(predictions_path),
+                "columns_used": common_numeric_columns,
+              },
+              indent=2,
+            ),
+            encoding="utf-8",
+          )
+          PY
+
+      - name: Upload outputs to GCS
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud storage cp "${RUN_DIR}/features.csv" "${GCS_OUTPUT_URI}/features.csv"
+          gcloud storage cp "${RUN_DIR}/features_weather.csv" "${GCS_OUTPUT_URI}/features_weather.csv"
+          gcloud storage cp "${RUN_DIR}/predictions.csv" "${GCS_OUTPUT_URI}/predictions.csv"
+          gcloud storage cp "${RUN_DIR}/predictions.geojson" "${GCS_OUTPUT_URI}/predictions.geojson"
+          gcloud storage cp "${RUN_DIR}/drift_report.html" "${GCS_OUTPUT_URI}/drift_report.html"
+          gcloud storage cp "${RUN_DIR}/drift_report_metadata.json" "${GCS_OUTPUT_URI}/drift_report_metadata.json"
+
+      - name: Upload workflow artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-inference-${{ env.RUN_ID }}
+          path: ${{ env.RUN_DIR }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Summarize weekly inference run
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### Weekly inference"
+            echo ""
+            echo "- Run ID: \`${RUN_ID}\`"
+            echo "- Start date: \`${START_DATE}\`"
+            echo "- End date: \`${END_DATE}\`"
+            echo "- Output prefix: \`${GCS_OUTPUT_URI}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"

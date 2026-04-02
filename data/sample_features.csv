@@ -1,0 +1,3 @@
+latitude,longitude,NDVI,EVI,NDWI,NBR,B2,B3,B4,B8,B11,B12,elevation,slope,aspect,mean_ndvi_100m,mean_ndvi_500m,precip_7d_sum,precip_30d_sum,temp_7d_mean,temp_30d_mean,humidity_7d_mean,humidity_30d_mean,wind_7d_max,wind_30d_max
+37.7749,-122.4194,0.30,0.20,0.08,0.10,100.0,110.0,120.0,130.0,140.0,150.0,50.0,3.0,180.0,0.31,0.28,2.5,11.0,18.0,17.0,58.0,60.0,9.0,11.0
+38.5816,-121.4944,0.42,0.25,0.04,0.14,102.0,112.0,122.0,132.0,142.0,152.0,30.0,2.0,200.0,0.40,0.36,1.2,8.5,22.0,20.5,42.0,46.0,14.0,16.0
