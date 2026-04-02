@@ -37,7 +37,7 @@ try:
         TARGET_COLUMN,
         WEATHER_NUMERIC_COLUMNS,
     )
-    from data_pipeline.weather_features import WINDOW_END_COLUMN, WINDOW_START_COLUMN
+    from data_pipeline.weather_features import WINDOW_END_COLUMN
     from model.registry import MlflowTrackingClient, PromotedModelLocations, TrackingClient, promote_serving_bundle
 except ImportError:  # pragma: no cover - exercised by python -m src...
     from src.common.paths import build_version_id, candidate_model_prefix
@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover - exercised by python -m src...
         TARGET_COLUMN,
         WEATHER_NUMERIC_COLUMNS,
     )
-    from src.data_pipeline.weather_features import WINDOW_END_COLUMN, WINDOW_START_COLUMN
+    from src.data_pipeline.weather_features import WINDOW_END_COLUMN
     from src.model.registry import (
         MlflowTrackingClient,
         PromotedModelLocations,
@@ -81,12 +81,18 @@ FIRE_EVENT_COLUMN_CANDIDATES = [
 ]
 BEST_MODEL_METRIC = "average_precision"
 
-os.environ.setdefault("MPLCONFIGDIR", str(Path(".cache") / "openfire" / "matplotlib"))
-Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
-import matplotlib
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+def get_pyplot():
+    os.environ.setdefault("MPLCONFIGDIR", str(Path(".cache") / "openfire" / "matplotlib"))
+    Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+
+    import matplotlib.pyplot as plt
+
+    return plt
 
 
 @dataclass(frozen=True)
@@ -333,6 +339,7 @@ def ensure_plot_parent(path: Path) -> None:
 def save_confusion_matrix_plot(y_true: pd.Series, y_score: np.ndarray, output_path: Path) -> None:
     ensure_plot_parent(output_path)
     y_pred = (y_score >= 0.5).astype(int)
+    plt = get_pyplot()
     fig, ax = plt.subplots(figsize=(5, 4))
     ConfusionMatrixDisplay.from_predictions(y_true, y_pred, ax=ax, colorbar=False)
     ax.set_title("Validation Confusion Matrix")
@@ -343,6 +350,7 @@ def save_confusion_matrix_plot(y_true: pd.Series, y_score: np.ndarray, output_pa
 
 def save_roc_curve_plot(y_true: pd.Series, y_score: np.ndarray, output_path: Path) -> None:
     ensure_plot_parent(output_path)
+    plt = get_pyplot()
     fig, ax = plt.subplots(figsize=(5, 4))
     RocCurveDisplay.from_predictions(y_true, y_score, ax=ax)
     ax.set_title("Validation ROC Curve")
@@ -353,6 +361,7 @@ def save_roc_curve_plot(y_true: pd.Series, y_score: np.ndarray, output_path: Pat
 
 def save_pr_curve_plot(y_true: pd.Series, y_score: np.ndarray, output_path: Path) -> None:
     ensure_plot_parent(output_path)
+    plt = get_pyplot()
     fig, ax = plt.subplots(figsize=(5, 4))
     PrecisionRecallDisplay.from_predictions(y_true, y_score, ax=ax)
     ax.set_title("Validation Precision-Recall Curve")
@@ -391,6 +400,7 @@ def save_feature_importance_plot(
 ) -> None:
     ensure_plot_parent(output_path)
     top_features = feature_importance.head(top_n).sort_values(ascending=True)
+    plt = get_pyplot()
     fig, ax = plt.subplots(figsize=(7, max(4, len(top_features) * 0.35)))
     ax.barh(top_features.index, top_features.values)
     ax.set_title("Validation Feature Importance")
