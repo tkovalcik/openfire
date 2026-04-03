@@ -244,6 +244,8 @@ jobs:
             SECRET_BINDINGS+=("OPENFIRE_MODEL_URI=${CLOUD_RUN_SECRET_OPENFIRE_MODEL_URI}:latest")
           fi
 
+          ENV_VARS_ARG="^@^$(IFS=@; echo "${ENV_BINDINGS[*]}")"
+
           DEPLOY_ARGS=(
             run deploy "${CLOUD_RUN_SERVICE}"
             "--image=${IMAGE_URI}"
@@ -260,7 +262,7 @@ jobs:
             "--execution-environment=gen2"
             "--service-account=${CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT}"
             "${AUTH_FLAG}"
-            "--set-env-vars=$(IFS=,; echo "${ENV_BINDINGS[*]}")"
+            "--set-env-vars=${ENV_VARS_ARG}"
           )
 
           if (( ${#SECRET_BINDINGS[@]} > 0 )); then
