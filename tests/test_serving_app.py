@@ -119,23 +119,8 @@ def test_app_health_metadata_and_predict(tmp_path: Path) -> None:
         geojson = client.post("/predict_geojson", json=payload)
 
     assert root.status_code == 200
-    assert root.json() == {
-        "service": "openfire-api",
-        "message": "OpenFire Serving API",
-        "status": "ok",
-        "runtime_mode": "live",
-        "model_loaded": True,
-        "model_source": "local",
-        "model_version": "test-bundle-v1",
-        "endpoints": {
-            "health": "/health",
-            "metadata": "/metadata",
-            "demo_geojson": "/demo/geojson",
-            "predict": "/predict",
-            "predict_geojson": "/predict_geojson",
-            "docs": "/docs",
-        },
-    }
+    assert root.headers["content-type"].startswith("text/html")
+    assert "OpenFire Risk Viewer" in root.text
     assert health.status_code == 200
     assert health.json() == {
         "status": "ok",
@@ -170,23 +155,8 @@ def test_app_starts_degraded_when_model_loading_fails(tmp_path: Path) -> None:
         geojson = client.post("/predict_geojson", json=payload)
 
     assert root.status_code == 200
-    assert root.json() == {
-        "service": "openfire-api",
-        "message": "OpenFire Serving API",
-        "status": "degraded",
-        "runtime_mode": "demo",
-        "model_loaded": False,
-        "model_source": "local",
-        "model_version": None,
-        "endpoints": {
-            "health": "/health",
-            "metadata": "/metadata",
-            "demo_geojson": "/demo/geojson",
-            "predict": "/predict",
-            "predict_geojson": "/predict_geojson",
-            "docs": "/docs",
-        },
-    }
+    assert root.headers["content-type"].startswith("text/html")
+    assert "OpenFire Risk Viewer" in root.text
     assert health.status_code == 200
     assert health.json() == {
         "status": "degraded",
