@@ -1,0 +1,70 @@
+{
+  "type": "FeatureCollection",
+  "metadata": {
+    "model_version": "gcs:model.joblib",
+    "inference_date": "2026-04-01",
+    "data_window": "2024-06-01 to 2024-06-30"
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -122.4194,
+          37.7749
+        ]
+      },
+      "properties": {
+        "probability": 0.18,
+        "predicted_label": 0,
+        "model_version": "gcs:model.joblib"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -121.8863,
+          37.3382
+        ]
+      },
+      "properties": {
+        "probability": 0.41,
+        "predicted_label": 0,
+        "model_version": "gcs:model.joblib"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -121.4944,
+          38.5816
+        ]
+      },
+      "properties": {
+        "probability": 0.67,
+        "predicted_label": 1,
+        "model_version": "gcs:model.joblib"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -119.7871,
+          36.7378
+        ]
+      },
+      "properties": {
+        "probability": 0.84,
+        "predicted_label": 1,
+        "model_version": "gcs:model.joblib"
+      }
+    }
+  ]
+}
