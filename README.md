@@ -282,6 +282,77 @@ export OPENFIRE_MODEL_URI=local://artifacts/model.joblib
 PYTHONPATH=src uvicorn serving.app:app --host 0.0.0.0 --port 8000
 ```
 
+### API Quickstart
+
+Use this section for grading and first-run checks. The API endpoints are defined in
+[src/serving/app.py](/Users/sebastiansteen/Desktop/MSDS/MLOps/openfire/src/serving/app.py) and the
+typed request/response contracts live in
+[src/serving/schemas.py](/Users/sebastiansteen/Desktop/MSDS/MLOps/openfire/src/serving/schemas.py).
+
+#### Run locally without Docker
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install -r docker/requirements.api.txt
+export OPENFIRE_MODEL_SOURCE=local
+export OPENFIRE_MODEL_URI=local://artifacts/model.joblib
+PYTHONPATH=src uvicorn serving.app:app --host 0.0.0.0 --port 8000
+```
+
+Then verify:
+
+```bash
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/metadata
+```
+
+#### Build and run the Docker container
+
+Build the API image from [docker/Dockerfile.api](/Users/sebastiansteen/Desktop/MSDS/MLOps/openfire/docker/Dockerfile.api):
+
+```bash
+docker build -f docker/Dockerfile.api -t openfire-api:local .
+```
+
+Run the container with the local model artifact mounted into `/app/artifacts`:
+
+```bash
+docker run --rm -p 8000:8000 \
+  -e OPENFIRE_MODEL_SOURCE=local \
+  -e OPENFIRE_MODEL_URI=local://artifacts/model.joblib \
+  -v "$PWD/artifacts:/app/artifacts" \
+  openfire-api:local
+```
+
+#### Example `/predict` request
+
+The repo includes a ready-made request body at
+[frontend/data/sample_predict_request.json](/Users/sebastiansteen/Desktop/MSDS/MLOps/openfire/frontend/data/sample_predict_request.json).
+
+```bash
+curl -X POST http://127.0.0.1:8000/predict \
+  -H "Content-Type: application/json" \
+  --data @frontend/data/sample_predict_request.json
+```
+
+Expected response format:
+
+```json
+{
+  "model_version": "gcs:model.joblib",
+  "predictions": [
+    {
+      "row_index": 0,
+      "probability": 0.5,
+      "predicted_label": 1,
+      "model_version": "gcs:model.joblib"
+    }
+  ]
+}
+```
+
 Cloud-oriented example:
 
 ```bash
