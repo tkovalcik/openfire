@@ -1,3 +1,29 @@
+# Data files - don't commit raw or processed data
+data/raw/
+data/processed/
+*.csv
+*.tif
+*.geotiff
+*.parquet
+
+# Environment and secrets
+.env
+.env.*
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# MLflow artifacts (tracked separately)
+mlruns/
+mlartifacts/
+
+# Model files
+*.pkl
+*.joblib
+*.h5
+
+.DS_Store
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
