@@ -1,0 +1,4 @@
+# Pinned MLflow server dependencies for deterministic container builds.
+mlflow==2.17.2
+psycopg2-binary==2.9.10
+google-cloud-storage==2.18.2
