@@ -8,3 +8,7 @@ artifacts/
 mlruns/
 .DS_Store
 data/
+
+# Local session files — not for the shared repo
+CLAUDE.md
+docs/PROGRESS.md
