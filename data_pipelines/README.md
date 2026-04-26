@@ -66,9 +66,11 @@ or focal loss in training.
 ```
 
 **Out-of-band dependency:** `fire_history_by_cell` — a per-cell roll-up of
-historical fire dates used by step 04 to attach labels. It's currently
-maintained by a teammate outside this pipeline. If regenerating from
-scratch, ensure that table exists before running step 04.
+historical fire dates used by step 04 to attach labels. It is regenerated
+**once a year**, after CalFire FRAP publishes the new perimeter release
+(typically April). Re-running it more often than that has no effect, since
+the inputs don't change between releases. Ensure it has been refreshed for
+the current FRAP vintage before running step 04.
 
 ---
 
@@ -249,9 +251,12 @@ full name (`04_merge_silver`).
    and `ASSET_YEAR_SUFFIX` (e.g. `"2025"`) in
    `02_ingest_calfire_gee.py`, then run it. Wait for the GEE task to
    finish (Code Editor → Tasks).
-3. **Update `fire_history_by_cell`** to include the new year's
-   perimeters. (This is currently outside this pipeline — coordinate
-   with whoever owns it.)
+3. **Regenerate `fire_history_by_cell`** so it reflects the new FRAP
+   release. CalFire publishes a new perimeter dataset roughly once a
+   year (usually April), and this table needs to be rebuilt against
+   that release before step 04 will pick up new labels. The script
+   that produces it lives outside this pipeline — coordinate with
+   whoever owns it.
 4. **Extract features:** edit `RUN_START` / `RUN_END` in
    `03b_extract_gee_land_weather.py` to cover the new year, then walk
    through cells 1 → 8 in order. Use cell 9 to retry any failures.
