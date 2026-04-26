@@ -74,24 +74,37 @@ def load_gold_shards(
     sample_frac: float | None = None,
     random_state: int = 42,
 ) -> pd.DataFrame:
-    """Load all Parquet shards from a GCS prefix or local directory."""
+    """Load Parquet shards from a GCS prefix or local directory.
+
+    sample_frac is applied per-shard during loading so the full dataset is
+    never materialized in memory when sampling.
+    """
     if prefix.startswith("gs://"):
-        df = _load_from_gcs(prefix, project=project)
+        df = _load_from_gcs(prefix, project=project, sample_frac=sample_frac, random_state=random_state)
     else:
         path = Path(prefix)
         files = sorted(path.glob("*.parquet"))
         if not files:
             raise FileNotFoundError(f"No Parquet files found in {path}")
-        df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+        frames = []
+        for f in files:
+            shard = pd.read_parquet(f)
+            if sample_frac is not None and 0.0 < sample_frac < 1.0:
+                shard = shard.sample(frac=sample_frac, random_state=random_state)
+            frames.append(shard)
+        df = pd.concat(frames, ignore_index=True)
 
-    if sample_frac is not None and 0.0 < sample_frac < 1.0:
-        df = df.sample(frac=sample_frac, random_state=random_state).reset_index(drop=True)
-        LOGGER.info("Sampled %.1f%% → %s rows", sample_frac * 100, f"{len(df):,}")
-
+    LOGGER.info("Loaded %s rows × %d columns", f"{len(df):,}", len(df.columns))
     return df
 
 
-def _load_from_gcs(prefix: str, *, project: str | None = None) -> pd.DataFrame:
+def _load_from_gcs(
+    prefix: str,
+    *,
+    project: str | None = None,
+    sample_frac: float | None = None,
+    random_state: int = 42,
+) -> pd.DataFrame:
     from google.cloud import storage as gcs
 
     bucket_name, blob_prefix = _parse_gcs_prefix(prefix)
@@ -100,12 +113,15 @@ def _load_from_gcs(prefix: str, *, project: str | None = None) -> pd.DataFrame:
     if not blobs:
         raise FileNotFoundError(f"No Parquet shards found at {prefix}")
 
-    LOGGER.info("Loading %d Parquet shards from %s", len(blobs), prefix)
+    LOGGER.info("Loading %d Parquet shards from %s (sample_frac=%s)", len(blobs), prefix, sample_frac)
     frames = []
     for i, blob in enumerate(blobs, 1):
         if i % 10 == 0:
             LOGGER.info("  shard %d / %d", i, len(blobs))
-        frames.append(pd.read_parquet(io.BytesIO(blob.download_as_bytes())))
+        shard = pd.read_parquet(io.BytesIO(blob.download_as_bytes()))
+        if sample_frac is not None and 0.0 < sample_frac < 1.0:
+            shard = shard.sample(frac=sample_frac, random_state=random_state)
+        frames.append(shard)
     return pd.concat(frames, ignore_index=True)
 
 
@@ -342,7 +358,6 @@ def train(
     # Load
     LOGGER.info("Loading gold shards from %s", parquet_prefix)
     df = load_gold_shards(parquet_prefix, project=gcp_project, sample_frac=sample_frac, random_state=random_state)
-    LOGGER.info("Loaded %s rows × %d columns", f"{len(df):,}", len(df.columns))
 
     # Split
     train_df, val_df = temporal_split(df, validation_year=validation_year)
