@@ -243,3 +243,74 @@ def test_days_since_last_burn_no_nulls_in_gold() -> None:
     ).result()
     null_count = next(iter(rows))["null_count"]
     assert null_count == 0, f"Found {null_count} NULL values in days_since_last_burn"
+
+
+# ── model bundle format ───────────────────────────────────────────────────────
+
+def test_model_bundle_has_required_keys() -> None:
+    """build_bundle returns a dict with every key model_loader expects."""
+    from unittest.mock import MagicMock
+    from pipelines.train import build_bundle, FEATURE_COLUMNS
+
+    fake_model = MagicMock()
+    bundle = build_bundle(fake_model, run_id="abc123", validation_year="2024", parquet_prefix="gs://openfire/openfire/datasets/gold/")
+
+    required_keys = {"model", "feature_columns", "decision_threshold", "dataset_version_info",
+                     "split_strategy", "split_group_column", "validation_groups", "model_version"}
+    assert required_keys <= bundle.keys(), f"Missing keys: {required_keys - bundle.keys()}"
+
+
+def test_model_bundle_feature_columns_match_spec() -> None:
+    """bundle feature_columns must exactly match the FEATURE_COLUMNS constant."""
+    from unittest.mock import MagicMock
+    from pipelines.train import build_bundle, FEATURE_COLUMNS
+
+    bundle = build_bundle(MagicMock(), run_id="abc123", validation_year="2024", parquet_prefix="gs://openfire/openfire/datasets/gold/")
+    assert bundle["feature_columns"] == FEATURE_COLUMNS
+    assert len(FEATURE_COLUMNS) == 34
+
+
+def test_model_bundle_split_metadata() -> None:
+    """bundle encodes temporal split strategy and holdout year."""
+    from unittest.mock import MagicMock
+    from pipelines.train import build_bundle
+
+    bundle = build_bundle(MagicMock(), run_id="run-1", validation_year="2023", parquet_prefix="gs://openfire/openfire/datasets/gold/")
+    assert bundle["split_strategy"] == "year"
+    assert bundle["split_group_column"] == "window_start_date"
+    assert bundle["validation_groups"] == ["2023"]
+
+
+def test_model_bundle_dataset_version_info() -> None:
+    """dataset_version_info must contain bq_table and gcs_parquet_prefix."""
+    from unittest.mock import MagicMock
+    from pipelines.train import build_bundle, GOLD_BQ_TABLE
+
+    bundle = build_bundle(MagicMock(), run_id="x", validation_year="2024", parquet_prefix="gs://openfire/openfire/datasets/gold/")
+    dvi = bundle["dataset_version_info"]
+    assert "bq_table" in dvi and GOLD_BQ_TABLE in dvi["bq_table"]
+    assert "gcs_parquet_prefix" in dvi
+
+
+def test_temporal_split_excludes_validation_year() -> None:
+    """temporal_split puts only the requested year in val and the rest in train."""
+    from pipelines.train import temporal_split
+
+    dates = pd.date_range("2021-01-01", periods=48, freq="ME")
+    df = pd.DataFrame({"window_start_date": dates, "burned_in_next_15_days": [False] * 48})
+    train_df, val_df = temporal_split(df, validation_year="2024")
+
+    train_years = set(pd.to_datetime(train_df["window_start_date"]).dt.year.unique())
+    val_years = set(pd.to_datetime(val_df["window_start_date"]).dt.year.unique())
+    assert 2024 not in train_years
+    assert val_years == {2024}
+
+
+def test_temporal_split_unknown_year_raises() -> None:
+    """temporal_split raises ValueError if the year is not in the dataset."""
+    from pipelines.train import temporal_split
+
+    df = pd.DataFrame({"window_start_date": pd.date_range("2021-01-01", periods=12, freq="ME"),
+                       "burned_in_next_15_days": [False] * 12})
+    with pytest.raises(ValueError, match="No rows for validation year"):
+        temporal_split(df, validation_year="2099")
