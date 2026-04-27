@@ -1,0 +1,49 @@
+# syntax=docker/dockerfile:1.7
+
+FROM python:3.11-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    VIRTUAL_ENV=/opt/venv
+
+WORKDIR /build
+
+RUN python -m venv "${VIRTUAL_ENV}"
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+
+COPY docker/requirements.train.txt /build/requirements.train.txt
+
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install -r /build/requirements.train.txt
+
+
+FROM python:3.11-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:${PATH}" \
+    PYTHONPATH=/app \
+    MPLCONFIGDIR=/tmp/matplotlib
+
+WORKDIR /app
+
+# libgomp1 is required for XGBoost parallel tree building (OpenMP threading).
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libgomp1 && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system --gid 10001 openfire && \
+    useradd --system --uid 10001 --gid 10001 --create-home --home-dir /home/openfire openfire
+
+COPY --from=builder /opt/venv /opt/venv
+COPY src /app/src
+
+RUN chown -R openfire:openfire /app /home/openfire
+
+USER openfire
+
+CMD ["python", "-m", "src.pipelines.train", "--output-dir", "/tmp/openfire/train"]
