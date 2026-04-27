@@ -72,16 +72,20 @@ def load_gold_shards(
     *,
     project: str | None = None,
     columns: list[str] | None = None,
+    float32_features: bool = False,
     sample_frac: float | None = None,
     random_state: int = 42,
 ) -> pd.DataFrame:
     """Load Parquet shards from a GCS prefix or local directory.
 
     columns: optional allow-list pushed down to the Parquet reader, reducing I/O
-    and peak memory. sample_frac is applied per-shard before accumulation.
+    and peak memory. float32_features downcasts float64 columns to float32 per
+    shard before accumulation, halving peak memory at the cost of minor precision
+    (XGBoost uses float32 internally, so this is lossless from the model's view).
+    sample_frac is applied per-shard before accumulation.
     """
     if prefix.startswith("gs://"):
-        df = _load_from_gcs(prefix, project=project, columns=columns, sample_frac=sample_frac, random_state=random_state)
+        df = _load_from_gcs(prefix, project=project, columns=columns, float32_features=float32_features, sample_frac=sample_frac, random_state=random_state)
     else:
         path = Path(prefix)
         files = sorted(path.glob("*.parquet"))
@@ -90,6 +94,8 @@ def load_gold_shards(
         frames = []
         for f in files:
             shard = pd.read_parquet(f, columns=columns)
+            if float32_features:
+                shard = _downcast_float64(shard)
             if sample_frac is not None and 0.0 < sample_frac < 1.0:
                 shard = shard.sample(frac=sample_frac, random_state=random_state)
             frames.append(shard)
@@ -99,11 +105,17 @@ def load_gold_shards(
     return df
 
 
+def _downcast_float64(df: pd.DataFrame) -> pd.DataFrame:
+    float64_cols = df.select_dtypes(include="float64").columns
+    return df.astype({c: "float32" for c in float64_cols}) if len(float64_cols) else df
+
+
 def _load_from_gcs(
     prefix: str,
     *,
     project: str | None = None,
     columns: list[str] | None = None,
+    float32_features: bool = False,
     sample_frac: float | None = None,
     random_state: int = 42,
 ) -> pd.DataFrame:
@@ -121,6 +133,8 @@ def _load_from_gcs(
         if i % 10 == 0:
             LOGGER.info("  shard %d / %d", i, len(blobs))
         shard = pd.read_parquet(io.BytesIO(blob.download_as_bytes()), columns=columns)
+        if float32_features:
+            shard = _downcast_float64(shard)
         if sample_frac is not None and 0.0 < sample_frac < 1.0:
             shard = shard.sample(frac=sample_frac, random_state=random_state)
         frames.append(shard)
@@ -360,7 +374,7 @@ def train(
     # Load — restrict to only the columns training needs to reduce peak memory
     _needed_cols = FEATURE_COLUMNS + [TARGET_COLUMN, "window_start_date"]
     LOGGER.info("Loading gold shards from %s", parquet_prefix)
-    df = load_gold_shards(parquet_prefix, project=gcp_project, columns=_needed_cols, sample_frac=sample_frac, random_state=random_state)
+    df = load_gold_shards(parquet_prefix, project=gcp_project, columns=_needed_cols, float32_features=True, sample_frac=sample_frac, random_state=random_state)
 
     # Split
     train_df, val_df = temporal_split(df, validation_year=validation_year)
