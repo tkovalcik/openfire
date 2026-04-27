@@ -250,7 +250,7 @@ def test_days_since_last_burn_no_nulls_in_gold() -> None:
 def test_model_bundle_has_required_keys() -> None:
     """build_bundle returns a dict with every key model_loader expects."""
     from unittest.mock import MagicMock
-    from pipelines.train import build_bundle, FEATURE_COLUMNS
+    from pipelines.train import build_bundle
 
     fake_model = MagicMock()
     bundle = build_bundle(fake_model, run_id="abc123", validation_year="2024", parquet_prefix="gs://openfire/openfire/datasets/gold/")
