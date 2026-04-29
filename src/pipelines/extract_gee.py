@@ -20,8 +20,12 @@ from __future__ import annotations
 import logging
 import time
 from datetime import date
+from typing import TYPE_CHECKING
 
 from google.cloud import bigquery
+
+if TYPE_CHECKING:
+    import ee
 
 from .aoi import DEFAULT_AOI, get_aoi_counties
 from .date_grid import STEP_DAYS
