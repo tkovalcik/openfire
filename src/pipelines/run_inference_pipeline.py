@@ -20,20 +20,23 @@ Three modes (one orchestrator, one CLI):
 
 Per-window flow:
 
-    1. extract_gee   — TODO: call GEE Python API to pull Sentinel-2 + gridMET
-                       for the window and stage into a BQ import table.
-                       Until this is wired, the pipeline requires silver tables
-                       to already contain rows for the requested window (i.e.
-                       pre-extracted via data_pipelines/03b). This means new
-                       windows (2026-present) cannot be processed until this
-                       step is implemented. Tracked as a known gap.
-    2. append_silver — TODO: MERGE staged import rows into silver_features_<year>.
-                       Depends on step 1.
+    1. extract_gee   — data-readiness gate (skip window if S2 not yet ingested);
+                       then GEE Python API export of Sentinel-2 + gridMET into
+                       silver_features_inference_import (overwrite=True), polling
+                       until the GEE batch task completes.
+    2. append_silver — MERGE silver_features_inference_import into
+                       silver_features_<year>. Idempotent on re-run; creates the
+                       year table if it doesn't exist yet.
     3. engineer_gold — MERGE engineered features into gold_features_inference.
     4. load_model    — fetch openfire-gold Production bundle from MLflow.
     5. predict       — read gold_features_inference for the window, score rows.
     6. write_outputs — BQ partition-scoped truncate, GeoJSON snapshot, manifest.
     7. log_summary   — row counts, runtime, model version.
+
+Data-readiness note: ``days_since_last_burn`` is derived from Cal Fire FRAP
+burn perimeters which publish annually with ~3–6 months lag. As of 2026-04-29,
+FRAP labels run through 2024-12-31. Inference windows in 2025+ treat cells
+that actually burned in 2025+ as unburned. Disclosed in the model card.
 
 Provenance / safety guarantees this skeleton already enforces:
 - Mode resolution is timezone-correct (UTC; matches training's date semantics).
@@ -125,6 +128,9 @@ class WindowContext:
     rows_predicted: int = 0
     loaded_model: object | None = None   # serving.model_loader.LoadedModel
     predictions: object | None = None   # pd.DataFrame in predictions_history schema
+    # A step sets this to a non-None string to abort remaining steps for
+    # this window (e.g., data-readiness gate in extract_gee).
+    skip_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +141,28 @@ class WindowStep:
     func: object | None = None
     # If True, this step is skipped when --no-write is set.
     is_write_step: bool = False
+
+
+def _step_extract_gee(ctx: WindowContext) -> None:
+    from .extract_gee import extract_gee_window, is_window_ready
+
+    ready, reason = is_window_ready(ctx.window)
+    if not ready:
+        ctx.skip_reason = f"data not ready — {reason}"
+        LOGGER.warning("  [SKIP ] extract_gee — %s", ctx.skip_reason)
+        return
+    extract_gee_window(ctx.window, project=PROJECT)
+
+
+def _step_append_silver(ctx: WindowContext) -> None:
+    from .extract_gee import append_silver_window
+
+    if ctx.bq_client is None:
+        raise RuntimeError(
+            "append_silver step requires a BigQuery client; pass one through "
+            "process_window(bq_client=...) or run with --dry-run."
+        )
+    append_silver_window(ctx.window, bq_client=ctx.bq_client, project=PROJECT)
 
 
 def _step_engineer_gold(ctx: WindowContext) -> None:
@@ -218,8 +246,8 @@ def _step_log_summary(ctx: WindowContext) -> None:
 
 
 WINDOW_STEPS: list[WindowStep] = [
-    WindowStep("extract_gee",   "Extract GEE features for the window",             func=None),
-    WindowStep("append_silver", "Append the window row to silver_features_<year>", func=None),
+    WindowStep("extract_gee",   "Data-readiness gate + GEE export to staging table", func=_step_extract_gee),
+    WindowStep("append_silver", "MERGE staging table into silver_features_<year>",   func=_step_append_silver),
     WindowStep("engineer_gold", "MERGE engineered features into gold_features_inference", func=_step_engineer_gold),
     WindowStep("load_model",    "Load openfire-gold Production from MLflow",       func=_step_load_model),
     WindowStep("predict",       "Score the window's gold features",                func=_step_predict),
@@ -234,6 +262,7 @@ class WindowOutcome:
     rows_in: int
     rows_predicted: int
     skipped_steps: list[str]
+    skip_reason: str | None = None  # non-None when a step aborted the window
 
 
 def process_window(
@@ -266,11 +295,15 @@ def process_window(
             continue
         LOGGER.info("  [RUN  ] %s — %s", step.name, step.description)
         step.func(ctx)
+        if ctx.skip_reason:
+            LOGGER.warning("  window=%s skipped after step %s: %s", window.isoformat(), step.name, ctx.skip_reason)
+            break
     return WindowOutcome(
         window=window,
         rows_in=ctx.rows_engineered,
         rows_predicted=ctx.rows_predicted,
         skipped_steps=skipped,
+        skip_reason=ctx.skip_reason,
     )
 
 
