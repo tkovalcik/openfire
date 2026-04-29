@@ -27,8 +27,7 @@ CREATE TABLE IF NOT EXISTS `msds603-mlops-project.openfire_features.predictions_
   model_version     STRING    NOT NULL,
   inference_run_at  TIMESTAMP NOT NULL
 )
-PARTITION BY window_start_date
-CLUSTER BY latitude, longitude;
+PARTITION BY window_start_date;
 
 
 CREATE TABLE IF NOT EXISTS `msds603-mlops-project.openfire_features.gold_features_inference`
@@ -59,5 +58,4 @@ CREATE TABLE IF NOT EXISTS `msds603-mlops-project.openfire_features.gold_feature
   -- Provenance: when this row was MERGEd into the inference table.
   engineered_at TIMESTAMP NOT NULL
 )
-PARTITION BY window_start_date
-CLUSTER BY latitude, longitude;
+PARTITION BY window_start_date;
