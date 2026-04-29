@@ -20,7 +20,10 @@ import pytest
 
 from pipelines.date_grid import EPOCH_START, STEP_DAYS, previous_grid_date
 from pipelines.run_inference_pipeline import (
+    WindowContext,
     WindowOutcome,
+    _step_append_silver,
+    _step_engineer_gold,
     build_arg_parser,
     process_window,
     resolve_windows_backfill,
@@ -210,32 +213,68 @@ def test_parser_rejects_invalid_date_format() -> None:
         build_arg_parser().parse_args(["--mode", "window", "--date", "2025/01/03"])
 
 
-# ── process_window skeleton ──────────────────────────────────────────────────
+# ── process_window step wiring ───────────────────────────────────────────────
 
-def test_process_window_reports_unimplemented_steps_as_skipped() -> None:
+def test_process_window_all_steps_wired_dry_run() -> None:
+    """In dry-run all steps are logged as [DRY]; none end up in skipped_steps."""
     grid_date = EPOCH_START + timedelta(days=10)
-    # Dry-run: implemented steps are logged as [DRY] and not added to
-    # skipped_steps. Only func=None stubs end up in skipped_steps.
     outcome = process_window(grid_date, dry_run=True, no_write=False)
     assert isinstance(outcome, WindowOutcome)
     assert outcome.window == grid_date
-    # Still-unimplemented stubs.
-    assert "extract_gee" in outcome.skipped_steps
-    assert "append_silver" in outcome.skipped_steps
-    # Wired steps are not skipped in dry-run — they're [DRY], not [TODO].
-    assert "engineer_gold" not in outcome.skipped_steps
-    assert "load_model" not in outcome.skipped_steps
-    assert "predict" not in outcome.skipped_steps
-    assert "write_outputs" not in outcome.skipped_steps
-    assert "log_summary" not in outcome.skipped_steps
+    assert outcome.skipped_steps == []
 
 
-def test_process_window_engineer_gold_requires_bq_client_when_not_dry_run() -> None:
-    """If we try to run engineer_gold without --dry-run and without a client,
-    the step raises rather than silently no-op'ing."""
-    grid_date = EPOCH_START + timedelta(days=10)
+def test_engineer_gold_step_requires_bq_client() -> None:
+    """_step_engineer_gold raises RuntimeError when bq_client is None."""
+    ctx = WindowContext(
+        window=EPOCH_START + timedelta(days=10),
+        bq_client=None,
+        dry_run=False,
+        no_write=False,
+    )
     with pytest.raises(RuntimeError, match="requires a BigQuery client"):
-        process_window(grid_date, dry_run=False, no_write=False, bq_client=None)
+        _step_engineer_gold(ctx)
+
+
+def test_append_silver_step_requires_bq_client() -> None:
+    """_step_append_silver raises RuntimeError when bq_client is None."""
+    ctx = WindowContext(
+        window=EPOCH_START + timedelta(days=10),
+        bq_client=None,
+        dry_run=False,
+        no_write=False,
+    )
+    with pytest.raises(RuntimeError, match="requires a BigQuery client"):
+        _step_append_silver(ctx)
+
+
+def test_process_window_skips_remaining_steps_when_skip_reason_set(monkeypatch) -> None:
+    """When a step sets ctx.skip_reason, subsequent steps must not run."""
+    import pipelines.run_inference_pipeline as orch
+    from pipelines.run_inference_pipeline import WindowStep
+
+    ran: list[str] = []
+
+    def abort_step(ctx):
+        ran.append("extract_gee")
+        ctx.skip_reason = "data not ready — test"
+
+    patched = [
+        WindowStep("extract_gee",   "...", func=abort_step),
+        WindowStep("append_silver", "...", func=lambda ctx: ran.append("append_silver")),
+        WindowStep("engineer_gold", "...", func=lambda ctx: ran.append("engineer_gold")),
+        WindowStep("load_model",    "...", func=lambda ctx: ran.append("load_model")),
+        WindowStep("predict",       "...", func=lambda ctx: ran.append("predict")),
+        WindowStep("write_outputs", "...", func=lambda ctx: ran.append("write_outputs"), is_write_step=True),
+        WindowStep("log_summary",   "...", func=lambda ctx: ran.append("log_summary")),
+    ]
+    monkeypatch.setattr(orch, "WINDOW_STEPS", patched)
+
+    grid_date = EPOCH_START + timedelta(days=10)
+    outcome = process_window(grid_date, dry_run=False, no_write=False, bq_client=MagicMock())
+
+    assert ran == ["extract_gee"]
+    assert outcome.skip_reason == "data not ready — test"
 
 
 def test_process_window_write_steps_skipped_with_no_write(monkeypatch) -> None:
