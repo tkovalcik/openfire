@@ -47,6 +47,24 @@ def next_grid_date(after: date) -> date:
     return _snap_forward(after + timedelta(days=1))
 
 
+def previous_grid_date(before: date) -> date:
+    """Largest grid date strictly less than `before`.
+
+    Used by the inference orchestrator's `latest` mode to find "the most
+    recent fully-elapsed 5-day window as of today (UTC)". Raises if no
+    grid date exists (i.e., `before` is on or before EPOCH_START).
+    """
+    candidate = before - timedelta(days=1)
+    if candidate < EPOCH_START:
+        raise ValueError(
+            f"No grid date exists strictly before {before.isoformat()} "
+            f"(EPOCH_START is {EPOCH_START.isoformat()})"
+        )
+    days = (candidate - EPOCH_START).days
+    floor_step = days // STEP_DAYS
+    return EPOCH_START + timedelta(days=floor_step * STEP_DAYS)
+
+
 def list_grid_dates(start: date, end: date) -> list[date]:
     """All grid dates in [start, end] inclusive.
 
