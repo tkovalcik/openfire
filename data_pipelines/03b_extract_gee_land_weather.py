@@ -30,7 +30,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
 import ee
@@ -43,11 +43,12 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from src.pipelines.aoi import DEFAULT_AOI, get_aoi_counties  # noqa: E402  (needs sys.path tweak above)
-
-
-# ── Training invariants — DO NOT CHANGE ──────────────────────
-EPOCH_START = date(2017, 9, 1)   # 5-day grid anchor; model assumes this
-STEP_DAYS = 5
+from src.pipelines.date_grid import (  # noqa: E402  (needs sys.path tweak above)
+    EPOCH_START,
+    STEP_DAYS,
+    generate_date_list,
+    years_in_range,
+)
 
 # ── Defaults that may be overridden by CLI args ──────────────
 GRID_SCALE = 1000
@@ -90,35 +91,6 @@ def parse_iso_date(value: str) -> date:
         raise argparse.ArgumentTypeError(
             f"Invalid date {value!r}; expected YYYY-MM-DD"
         ) from exc
-
-
-def generate_date_list(
-    epoch: date, run_start: date, run_end: date, step_days: int
-) -> list[str]:
-    """Generate ISO date strings aligned to the global 5-day grid starting at epoch."""
-    days_offset = (run_start - epoch).days
-    first_step = (days_offset + step_days - 1) // step_days  # ceiling division
-    cursor = epoch + timedelta(days=first_step * step_days)
-
-    dates = []
-    while cursor <= run_end:
-        dates.append(cursor.isoformat())
-        cursor += timedelta(days=step_days)
-    return dates
-
-
-def years_in_range(
-    epoch: date, run_start: date, run_end: date, step_days: int
-) -> list[int]:
-    """Return the sorted set of calendar years touched by the run window."""
-    return sorted({
-        d.year
-        for d in (
-            epoch + timedelta(days=i * step_days)
-            for i in range(((run_end - epoch).days // step_days) + 1)
-        )
-        if run_start <= d <= run_end
-    })
 
 
 # ── GEE-side helpers (call only after ee.Initialize) ─────────
