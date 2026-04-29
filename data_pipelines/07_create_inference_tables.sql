@@ -9,6 +9,28 @@
 -- exactly so any consumer can swap the table reference; partitioned and
 -- clustered for the per-window write / per-cell read pattern.
 
+-- predictions_history: one row per (cell, window) per scoring run. Per Step 0
+-- decision, primary key is (latitude, longitude, window_start_date) and the
+-- table is partitioned + clustered for the per-window write / per-cell read
+-- pattern. inference_run_at provides timestamp provenance; model_version
+-- pins each row to a specific MLflow registered version so promoting a new
+-- model gives clean A/B history.
+
+CREATE TABLE IF NOT EXISTS `msds603-mlops-project.openfire_features.predictions_history`
+(
+  latitude          FLOAT64   NOT NULL,
+  longitude         FLOAT64   NOT NULL,
+  window_start_date DATE      NOT NULL,
+  risk_probability  FLOAT64   NOT NULL,
+  predicted_label   INT64     NOT NULL,
+  model_name        STRING    NOT NULL,
+  model_version     STRING    NOT NULL,
+  inference_run_at  TIMESTAMP NOT NULL
+)
+PARTITION BY window_start_date
+CLUSTER BY latitude, longitude;
+
+
 CREATE TABLE IF NOT EXISTS `msds603-mlops-project.openfire_features.gold_features_inference`
 (
   window_start_date     DATE      NOT NULL,
