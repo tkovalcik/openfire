@@ -108,21 +108,58 @@ def resolve_windows_latest(
 
 # ── per-window flow ──────────────────────────────────────────────────────────
 
+@dataclass
+class WindowContext:
+    """Shared per-window state passed into each step's func."""
+    window: date
+    bq_client: object | None  # bigquery.Client; lazy import keeps tests light
+    dry_run: bool
+    no_write: bool
+    rows_engineered: int = 0
+    rows_predicted: int = 0
+
+
 @dataclass(frozen=True)
 class WindowStep:
     name: str
     description: str
-    implemented: bool
+    # None ⇒ unimplemented stub (logged as TODO). Otherwise mutates ctx in place.
+    func: object | None = None
+    # If True, this step is skipped when --no-write is set.
+    is_write_step: bool = False
+
+
+def _step_engineer_gold(ctx: WindowContext) -> None:
+    from .engineer_gold import ensure_inference_tables, engineer_inference_gold
+
+    if ctx.bq_client is None:
+        raise RuntimeError(
+            "engineer_gold step requires a BigQuery client; pass one through "
+            "process_window(bq_client=...) or run with --dry-run."
+        )
+    ensure_inference_tables(ctx.bq_client)
+    ctx.rows_engineered = engineer_inference_gold(
+        ctx.bq_client, target_date=ctx.window
+    )
+
+
+def _step_log_summary(ctx: WindowContext) -> None:
+    LOGGER.info(
+        "  window=%s rows_engineered=%s rows_predicted=%s",
+        ctx.window.isoformat(),
+        f"{ctx.rows_engineered:,}",
+        f"{ctx.rows_predicted:,}",
+    )
 
 
 WINDOW_STEPS: list[WindowStep] = [
-    WindowStep("extract_gee",   "Extract GEE features for the window",            implemented=False),
-    WindowStep("append_silver", "Append the window row to silver_features_<year>", implemented=False),
-    WindowStep("engineer_gold", "Engineer gold features (Step 4 strategy)",        implemented=False),
-    WindowStep("load_model",    "Load openfire-gold Production from MLflow",       implemented=True),
-    WindowStep("predict",       "Score the window's gold features",                implemented=True),
-    WindowStep("write_outputs", "BQ MERGE + GeoJSON snapshot + manifest",          implemented=False),
-    WindowStep("log_summary",   "Log row counts, runtime, model version",          implemented=True),
+    WindowStep("extract_gee",   "Extract GEE features for the window",             func=None),
+    WindowStep("append_silver", "Append the window row to silver_features_<year>", func=None),
+    WindowStep("engineer_gold", "MERGE engineered features into gold_features_inference", func=_step_engineer_gold),
+    WindowStep("load_model",    "Load openfire-gold Production from MLflow",       func=None),
+    WindowStep("predict",       "Score the window's gold features",                func=None),
+    WindowStep("write_outputs", "BQ MERGE + GeoJSON snapshot + manifest",          func=None, is_write_step=True),
+    WindowStep("log_summary",   "Log row counts, runtime, model version",          func=_step_log_summary),
 ]
 
 
@@ -139,30 +176,37 @@ def process_window(
     *,
     dry_run: bool,
     no_write: bool,
+    bq_client: object | None = None,
 ) -> WindowOutcome:
-    """Skeleton per-window pipeline. Real GEE/BQ work lands in Steps 4 and 6.
-
-    For now this only logs the planned step list and records which steps
-    were no-ops. The plumbing — argparse, mode resolution, the window loop —
-    is fully wired so subsequent PRs only have to fill in step bodies.
-    """
+    """Run the per-window pipeline. Steps with no implementation are logged as TODO."""
     skipped: list[str] = []
+    ctx = WindowContext(
+        window=window,
+        bq_client=bq_client,
+        dry_run=dry_run,
+        no_write=no_write,
+    )
     LOGGER.info("=== window %s ===", window.isoformat())
     for step in WINDOW_STEPS:
-        if not step.implemented:
+        if step.func is None:
             LOGGER.info("  [TODO ] %s — %s", step.name, step.description)
             skipped.append(step.name)
             continue
         if dry_run:
             LOGGER.info("  [DRY  ] %s — %s", step.name, step.description)
             continue
-        if no_write and step.name == "write_outputs":
+        if no_write and step.is_write_step:
             LOGGER.info("  [SKIP ] %s — --no-write set", step.name)
             skipped.append(step.name)
             continue
-        LOGGER.info("  [SKIP ] %s — implementation deferred to follow-up PR", step.name)
-        skipped.append(step.name)
-    return WindowOutcome(window=window, rows_in=0, rows_predicted=0, skipped_steps=skipped)
+        LOGGER.info("  [RUN  ] %s — %s", step.name, step.description)
+        step.func(ctx)
+    return WindowOutcome(
+        window=window,
+        rows_in=ctx.rows_engineered,
+        rows_predicted=ctx.rows_predicted,
+        skipped_steps=skipped,
+    )
 
 
 # ── orchestrator entry point ─────────────────────────────────────────────────
@@ -281,7 +325,12 @@ def main(argv: list[str] | None = None) -> None:
             LOGGER.info("[DRY RUN] would process window %s", w.isoformat())
         return
 
-    outcomes = [process_window(w, dry_run=False, no_write=args.no_write) for w in windows]
+    from .bq_utils import get_client
+    bq_client = get_client(args.project)
+    outcomes = [
+        process_window(w, dry_run=False, no_write=args.no_write, bq_client=bq_client)
+        for w in windows
+    ]
     LOGGER.info(
         "Inference complete. Windows processed: %d (skeleton — predict + writes are deferred).",
         len(outcomes),
