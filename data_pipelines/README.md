@@ -119,7 +119,7 @@ Don't run both — they write to different tables (`*_gee_import`).
 
 - Builds the 1 km covering grid for the 4-county AOI (geometry centroids
   used as join keys downstream).
-- For every 5-day window in `[RUN_START, RUN_END]` (snapped to a fixed
+- For every 5-day window in `[--start, --end]` (snapped to a fixed
   global epoch of 2017-09-01), it:
   - Pulls Sentinel-2 SR Harmonized images, masks clouds via the SCL band,
     computes NDVI/NDWI/NBR/EVI, takes the median across the window.
@@ -133,13 +133,23 @@ Don't run both — they write to different tables (`*_gee_import`).
 - Pixels masked by clouds are filled with `-9999` and converted back to
   `NULL` downstream via `NULLIF`.
 
-Run when: you want to backfill or extend a year of data. **Edit
-`RUN_START` and `RUN_END` for the window you want, then walk through
-the `# %%` cells in order** in VS Code or JupyterLab. Cell 8 monitors
-task progress; cell 9 retries failures.
+Run when: you want to backfill or extend a year of data.
 
-Tasks take hours and run in batches of ~50–100 windows; expect to
-re-run cell 9 a few times to mop up sporadic GEE failures.
+```bash
+# Backfill one year (snaps to the 5-day grid; defaults to socal_4_county AOI)
+python data_pipelines/03b_extract_gee_land_weather.py \
+    --start 2024-01-01 --end 2024-12-31
+
+# First-time setup on a new machine (one-shot ee.Authenticate())
+... --authenticate
+
+# Wipe any leftover READY/RUNNING GEE tasks from a prior run before submitting
+... --cancel-existing
+```
+
+Tasks take hours and run in batches of ~50–100 windows; expect sporadic
+GEE failures. The script's `retry_failed()` helper is still importable
+from a notebook session if you want to mop up after the fact.
 
 ### `04_merge_silver_years.sql`
 **Merges yearly silver tables into one and joins fire labels.**
@@ -257,9 +267,10 @@ full name (`04_merge_silver`).
    that release before step 04 will pick up new labels. The script
    that produces it lives outside this pipeline — coordinate with
    whoever owns it.
-4. **Extract features:** edit `RUN_START` / `RUN_END` in
-   `03b_extract_gee_land_weather.py` to cover the new year, then walk
-   through cells 1 → 8 in order. Use cell 9 to retry any failures.
+4. **Extract features:** run
+   `python data_pipelines/03b_extract_gee_land_weather.py --start <YYYY-01-01> --end <YYYY-12-31>`
+   for the new year. Tasks take hours; check `ee.batch.Task.list()` (or
+   the GEE Code Editor Tasks tab) to monitor.
 5. **Rebuild gold:**
    ```bash
    python -m src.pipelines.run_training_pipeline
