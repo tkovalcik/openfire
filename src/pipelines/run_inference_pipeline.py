@@ -218,7 +218,7 @@ def _step_predict(ctx: WindowContext) -> None:
 def _step_write_outputs(ctx: WindowContext) -> None:
     from datetime import datetime, timezone
 
-    from common.storage import StorageClient
+    from src.common.storage import StorageClient
 
     from .output_writer import update_manifest, write_geojson_snapshot, write_predictions_to_bq
 
