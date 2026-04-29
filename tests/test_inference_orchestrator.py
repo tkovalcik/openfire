@@ -214,19 +214,19 @@ def test_parser_rejects_invalid_date_format() -> None:
 
 def test_process_window_reports_unimplemented_steps_as_skipped() -> None:
     grid_date = EPOCH_START + timedelta(days=10)
-    # Dry-run: even implemented steps don't actually run, so we don't need a
-    # BQ client. Step 4 wires engineer_gold; the rest remain TODO.
+    # Dry-run: implemented steps are logged as [DRY] and not added to
+    # skipped_steps. Only func=None stubs end up in skipped_steps.
     outcome = process_window(grid_date, dry_run=True, no_write=False)
     assert isinstance(outcome, WindowOutcome)
     assert outcome.window == grid_date
+    # Still-unimplemented stubs.
     assert "extract_gee" in outcome.skipped_steps
     assert "append_silver" in outcome.skipped_steps
-    assert "load_model" in outcome.skipped_steps
-    assert "predict" in outcome.skipped_steps
-    assert "write_outputs" in outcome.skipped_steps
-    # engineer_gold and log_summary now have implementations, so they're not
-    # in skipped_steps.
+    # Wired steps are not skipped in dry-run — they're [DRY], not [TODO].
     assert "engineer_gold" not in outcome.skipped_steps
+    assert "load_model" not in outcome.skipped_steps
+    assert "predict" not in outcome.skipped_steps
+    assert "write_outputs" not in outcome.skipped_steps
     assert "log_summary" not in outcome.skipped_steps
 
 
@@ -238,7 +238,22 @@ def test_process_window_engineer_gold_requires_bq_client_when_not_dry_run() -> N
         process_window(grid_date, dry_run=False, no_write=False, bq_client=None)
 
 
-def test_process_window_write_steps_skipped_with_no_write() -> None:
+def test_process_window_write_steps_skipped_with_no_write(monkeypatch) -> None:
+    # Use dry_run=False + no_write=True to exercise the actual SKIP path.
+    # WINDOW_STEPS holds baked function references, so patch the list itself
+    # with no-op versions of every non-write step.
+    import pipelines.run_inference_pipeline as orch
+    from pipelines.run_inference_pipeline import WindowStep
+
+    noop = lambda ctx: None  # noqa: E731
+    patched_steps = [
+        WindowStep(s.name, s.description,
+                   func=(noop if (s.func is not None and not s.is_write_step) else s.func),
+                   is_write_step=s.is_write_step)
+        for s in orch.WINDOW_STEPS
+    ]
+    monkeypatch.setattr(orch, "WINDOW_STEPS", patched_steps)
+
     grid_date = EPOCH_START + timedelta(days=10)
-    outcome = process_window(grid_date, dry_run=True, no_write=True)
+    outcome = process_window(grid_date, dry_run=False, no_write=True, bq_client=MagicMock())
     assert "write_outputs" in outcome.skipped_steps
