@@ -16,9 +16,18 @@ MERGE `msds603-mlops-project.openfire_features.gold_features_inference` AS dst
 USING (
   WITH ParsedSilver AS (
     SELECT
-      * EXCEPT(`system:index`),
-      CAST(timestamp AS DATE) AS window_start_date,
-      NULLIF(historical_fire_dates, 'None') AS clean_fire_dates
+      -- Explicit column list avoids SELECT * ambiguity: both silver and
+      -- fire_history_by_cell carry `geo` and `system:index`, so a wildcard
+      -- JOIN would make those names ambiguous on a wildcard table.
+      s.latitude, s.longitude,
+      s.timestamp,
+      s.B2, s.B3, s.B4, s.B8, s.B11, s.B12,
+      s.mean_NDVI, s.mean_EVI, s.mean_NDWI, s.mean_NBR,
+      s.gridmet_temp_max, s.gridmet_humidity_min,
+      s.gridmet_precip_sum, s.gridmet_wind_max,
+      s.mean_elevation, s.mean_slope, s.mean_cos_aspect, s.mean_sin_aspect,
+      CAST(s.timestamp AS DATE) AS window_start_date,
+      NULLIF(f.historical_fire_dates, 'None') AS clean_fire_dates
     FROM `msds603-mlops-project.openfire_features.silver_features_*` s
     LEFT JOIN `msds603-mlops-project.openfire_features.fire_history_by_cell` f
       USING (latitude, longitude)

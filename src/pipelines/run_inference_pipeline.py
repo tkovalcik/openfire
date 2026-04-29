@@ -18,16 +18,22 @@ Three modes (one orchestrator, one CLI):
 - ``window --date YYYY-MM-DD``
     Process exactly one window. Errors out if the date isn't on the 5-day grid.
 
-Per-window flow (skeleton — Steps 4 and 6 fill in the parts marked TODO):
+Per-window flow:
 
-    1. extract_gee   — TODO Step 1 helpers can already do this; deferred to a
-                       follow-up wiring PR so the orchestrator can land first.
-    2. append_silver — TODO depends on 1.
-    3. engineer_gold — TODO Step 4 (gold_features_inference table strategy).
-    4. load_model    — implemented (predict.load_production_bundle).
-    5. predict       — implemented (predict.predict_window).
-    6. write_outputs — TODO Step 6 (BQ MERGE, GeoJSON snapshot, manifest).
-    7. log_summary   — implemented inline.
+    1. extract_gee   — TODO: call GEE Python API to pull Sentinel-2 + gridMET
+                       for the window and stage into a BQ import table.
+                       Until this is wired, the pipeline requires silver tables
+                       to already contain rows for the requested window (i.e.
+                       pre-extracted via data_pipelines/03b). This means new
+                       windows (2026-present) cannot be processed until this
+                       step is implemented. Tracked as a known gap.
+    2. append_silver — TODO: MERGE staged import rows into silver_features_<year>.
+                       Depends on step 1.
+    3. engineer_gold — MERGE engineered features into gold_features_inference.
+    4. load_model    — fetch openfire-gold Production bundle from MLflow.
+    5. predict       — read gold_features_inference for the window, score rows.
+    6. write_outputs — BQ partition-scoped truncate, GeoJSON snapshot, manifest.
+    7. log_summary   — row counts, runtime, model version.
 
 Provenance / safety guarantees this skeleton already enforces:
 - Mode resolution is timezone-correct (UTC; matches training's date semantics).
@@ -117,6 +123,8 @@ class WindowContext:
     no_write: bool
     rows_engineered: int = 0
     rows_predicted: int = 0
+    loaded_model: object | None = None   # serving.model_loader.LoadedModel
+    predictions: object | None = None   # pd.DataFrame in predictions_history schema
 
 
 @dataclass(frozen=True)
@@ -143,6 +151,63 @@ def _step_engineer_gold(ctx: WindowContext) -> None:
     )
 
 
+def _step_load_model(ctx: WindowContext) -> None:
+    from .predict import load_production_bundle
+    ctx.loaded_model = load_production_bundle()
+    LOGGER.info(
+        "  loaded model %s version=%s threshold=%.3f",
+        ctx.loaded_model.model_source,
+        ctx.loaded_model.model_version,
+        ctx.loaded_model.decision_threshold,
+    )
+
+
+def _step_predict(ctx: WindowContext) -> None:
+    from google.cloud import bigquery
+
+    import pandas as pd
+
+    from .engineer_gold import INFERENCE_GOLD_TABLE
+    from .predict import predict_window
+
+    sql = f"""
+        SELECT *
+        FROM `{INFERENCE_GOLD_TABLE}`
+        WHERE window_start_date = @target_date
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("target_date", "DATE", ctx.window),
+        ]
+    )
+    features: pd.DataFrame = ctx.bq_client.query(sql, job_config=job_config).to_dataframe()
+    LOGGER.info("  read %s gold feature rows for window %s", f"{len(features):,}", ctx.window.isoformat())
+
+    ctx.predictions = predict_window(features, loaded_model=ctx.loaded_model)
+    ctx.rows_predicted = len(ctx.predictions)
+
+
+def _step_write_outputs(ctx: WindowContext) -> None:
+    from datetime import datetime, timezone
+
+    from common.storage import StorageClient
+
+    from .output_writer import update_manifest, write_geojson_snapshot, write_predictions_to_bq
+
+    run_at = datetime.now(timezone.utc)
+    storage = StorageClient(gcp_project_id=PROJECT)
+
+    write_predictions_to_bq(ctx.bq_client, ctx.predictions, target_date=ctx.window)
+    geojson_uri = write_geojson_snapshot(ctx.predictions, target_date=ctx.window, storage=storage)
+    update_manifest(
+        latest_window_start_date=ctx.window,
+        latest_geojson_uri=geojson_uri,
+        model_version=ctx.loaded_model.model_version,
+        updated_at=run_at,
+        storage=storage,
+    )
+
+
 def _step_log_summary(ctx: WindowContext) -> None:
     LOGGER.info(
         "  window=%s rows_engineered=%s rows_predicted=%s",
@@ -156,9 +221,9 @@ WINDOW_STEPS: list[WindowStep] = [
     WindowStep("extract_gee",   "Extract GEE features for the window",             func=None),
     WindowStep("append_silver", "Append the window row to silver_features_<year>", func=None),
     WindowStep("engineer_gold", "MERGE engineered features into gold_features_inference", func=_step_engineer_gold),
-    WindowStep("load_model",    "Load openfire-gold Production from MLflow",       func=None),
-    WindowStep("predict",       "Score the window's gold features",                func=None),
-    WindowStep("write_outputs", "BQ MERGE + GeoJSON snapshot + manifest",          func=None, is_write_step=True),
+    WindowStep("load_model",    "Load openfire-gold Production from MLflow",       func=_step_load_model),
+    WindowStep("predict",       "Score the window's gold features",                func=_step_predict),
+    WindowStep("write_outputs", "BQ partition truncate + GeoJSON snapshot + manifest", func=_step_write_outputs, is_write_step=True),
     WindowStep("log_summary",   "Log row counts, runtime, model version",          func=_step_log_summary),
 ]
 
@@ -331,10 +396,7 @@ def main(argv: list[str] | None = None) -> None:
         process_window(w, dry_run=False, no_write=args.no_write, bq_client=bq_client)
         for w in windows
     ]
-    LOGGER.info(
-        "Inference complete. Windows processed: %d (skeleton — predict + writes are deferred).",
-        len(outcomes),
-    )
+    LOGGER.info("Inference complete. Windows processed: %d.", len(outcomes))
 
 
 if __name__ == "__main__":

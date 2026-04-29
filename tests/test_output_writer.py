@@ -233,7 +233,9 @@ def test_predictions_history_ddl_in_create_file() -> None:
     sql = (REPO_ROOT / "data_pipelines" / "07_create_inference_tables.sql").read_text()
     assert "CREATE TABLE IF NOT EXISTS `msds603-mlops-project.openfire_features.predictions_history`" in sql
     assert "PARTITION BY window_start_date" in sql
-    assert "CLUSTER BY latitude, longitude" in sql
+    # BQ rejects CLUSTER BY on FLOAT64 columns (lat/lon); table is partitioned
+    # by date only — no cluster key.
+    assert "CLUSTER BY latitude, longitude" not in sql
     # No destructive verbs should have crept into the DDL file.
     upper = sql.upper()
     for forbidden in ("DROP TABLE", "DELETE FROM", "TRUNCATE TABLE", "CREATE OR REPLACE TABLE"):
