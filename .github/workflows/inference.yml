@@ -1,0 +1,238 @@
+name: inference
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Processing mode: backfill | latest | window"
+        required: true
+        default: "latest"
+        type: choice
+        options:
+          - latest
+          - backfill
+          - window
+      start:
+        description: "backfill: range start (YYYY-MM-DD)"
+        required: false
+        default: ""
+        type: string
+      end:
+        description: "backfill: range end (YYYY-MM-DD)"
+        required: false
+        default: ""
+        type: string
+      date:
+        description: "window: single grid date (YYYY-MM-DD)"
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: Print plan without touching any external service
+        required: false
+        default: false
+        type: boolean
+      image_tag:
+        description: Optional image tag override. Defaults to the commit SHA.
+        required: false
+        default: ""
+        type: string
+      gcp_project_id:
+        description: Optional override for the GCP project ID
+        required: false
+        type: string
+      gcp_region:
+        description: Optional override for the GCP region
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  # Allow at most one inference run at a time to avoid overlapping BQ MERGEs.
+  group: inference-${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT_ID: ${{ inputs.gcp_project_id || vars.GCP_PROJECT_ID }}
+  GCP_REGION: ${{ inputs.gcp_region || vars.GCP_REGION || 'us-central1' }}
+  ARTIFACT_REGISTRY_REPOSITORY: ${{ vars.ARTIFACT_REGISTRY_REPOSITORY }}
+  CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT: ${{ vars.CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT }}
+  CLOUD_RUN_INFERENCE_JOB: ${{ vars.CLOUD_RUN_INFERENCE_JOB || 'openfire-inference' }}
+  CLOUD_RUN_SECRET_MLFLOW_TRACKING_URI: ${{ vars.CLOUD_RUN_SECRET_MLFLOW_TRACKING_URI }}
+  GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+  GCP_DEPLOYER_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+  IMAGE_NAME: openfire-inference
+  IMAGE_TAG_OVERRIDE: ${{ inputs.image_tag }}
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_vars=(
+            GCP_PROJECT_ID
+            GCP_REGION
+            ARTIFACT_REGISTRY_REPOSITORY
+            CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT
+            GCP_WORKLOAD_IDENTITY_PROVIDER
+            GCP_DEPLOYER_SERVICE_ACCOUNT
+          )
+
+          for name in "${required_vars[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required repository variable or workflow input: ${name}"
+              exit 1
+            fi
+          done
+
+      - name: Authenticate to Google Cloud via Workload Identity Federation
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push inference image
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE_TAG="${IMAGE_TAG_OVERRIDE:-${GITHUB_SHA}}"
+          IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPOSITORY}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+          echo "IMAGE_URI=${IMAGE_URI}" >> "${GITHUB_ENV}"
+
+          docker buildx build \
+            --platform linux/amd64 \
+            --file docker/Dockerfile.inference \
+            --tag "${IMAGE_URI}" \
+            --push \
+            .
+
+      - name: Build inference command args
+        id: args
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INFERENCE_ARGS=(
+            python -m src.pipelines.run_inference_pipeline
+            --mode "${{ inputs.mode }}"
+          )
+
+          if [[ -n "${{ inputs.start }}" ]]; then
+            INFERENCE_ARGS+=(--start "${{ inputs.start }}")
+          fi
+
+          if [[ -n "${{ inputs.end }}" ]]; then
+            INFERENCE_ARGS+=(--end "${{ inputs.end }}")
+          fi
+
+          if [[ -n "${{ inputs.date }}" ]]; then
+            INFERENCE_ARGS+=(--date "${{ inputs.date }}")
+          fi
+
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            INFERENCE_ARGS+=(--dry-run)
+          fi
+
+          # gcloud --args expects comma-separated values
+          ARGS_CSV="$(IFS=,; echo "${INFERENCE_ARGS[*]}")"
+          echo "args_csv=${ARGS_CSV}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create or update Cloud Run Job
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SECRET_FLAGS=()
+          if [[ -n "${CLOUD_RUN_SECRET_MLFLOW_TRACKING_URI:-}" ]]; then
+            SECRET_FLAGS+=(--update-secrets "MLFLOW_TRACKING_URI=${CLOUD_RUN_SECRET_MLFLOW_TRACKING_URI}:latest")
+          fi
+
+          JOB_ARGS=(
+            "--image=${IMAGE_URI}"
+            "--project=${GCP_PROJECT_ID}"
+            "--region=${GCP_REGION}"
+            "--service-account=${CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT}"
+            "--memory=16Gi"
+            "--cpu=4"
+            "--task-timeout=7200s"
+            "--max-retries=0"
+            "--args=${{ steps.args.outputs.args_csv }}"
+          )
+
+          if (( ${#SECRET_FLAGS[@]} > 0 )); then
+            JOB_ARGS+=("${SECRET_FLAGS[@]}")
+          fi
+
+          if gcloud run jobs describe "${CLOUD_RUN_INFERENCE_JOB}" \
+               --project="${GCP_PROJECT_ID}" \
+               --region="${GCP_REGION}" \
+               &>/dev/null; then
+            gcloud run jobs update "${CLOUD_RUN_INFERENCE_JOB}" "${JOB_ARGS[@]}"
+          else
+            gcloud run jobs create "${CLOUD_RUN_INFERENCE_JOB}" "${JOB_ARGS[@]}"
+          fi
+
+      - name: Execute inference job
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run jobs execute "${CLOUD_RUN_INFERENCE_JOB}" \
+            --project="${GCP_PROJECT_ID}" \
+            --region="${GCP_REGION}" \
+            --wait
+
+      - name: Summarize run
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### OpenFire Inference"
+            echo ""
+            echo "- Image: \`${IMAGE_URI}\`"
+            echo "- Job: \`${CLOUD_RUN_INFERENCE_JOB}\`"
+            echo "- Mode: \`${{ inputs.mode }}\`"
+            if [[ -n "${{ inputs.start }}" ]]; then
+              echo "- Start: \`${{ inputs.start }}\`"
+            fi
+            if [[ -n "${{ inputs.end }}" ]]; then
+              echo "- End: \`${{ inputs.end }}\`"
+            fi
+            if [[ -n "${{ inputs.date }}" ]]; then
+              echo "- Date: \`${{ inputs.date }}\`"
+            fi
+            if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+              echo "- Mode: **dry run**"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
