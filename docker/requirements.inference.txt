@@ -1,0 +1,16 @@
+# Pinned inference dependencies for deterministic container builds.
+# This image intentionally excludes training-only packages such as matplotlib
+# and scikit-learn fit APIs (scikit-learn itself is included because the model
+# bundle may contain a sklearn Pipeline wrapper loaded by joblib).
+# mlflow pinned to 2.17.2 to match the MLflow tracking server version.
+mlflow==2.17.2
+pyarrow==17.0.0
+pandas==2.3.3
+numpy==2.4.3
+scikit-learn==1.8.0
+joblib==1.5.3
+xgboost==3.2.0
+google-cloud-bigquery==3.41.0
+google-cloud-storage==3.10.1
+db-dtypes==1.5.1
+earthengine-api==1.7.21
