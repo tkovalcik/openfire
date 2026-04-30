@@ -296,3 +296,58 @@ def test_process_window_write_steps_skipped_with_no_write(monkeypatch) -> None:
     grid_date = EPOCH_START + timedelta(days=10)
     outcome = process_window(grid_date, dry_run=False, no_write=True, bq_client=MagicMock())
     assert "write_outputs" in outcome.skipped_steps
+
+
+# ── --from-step / --to-step (step filtering) ─────────────────────────────────
+
+def test_select_steps_full_range_when_no_args() -> None:
+    from pipelines.run_inference_pipeline import WINDOW_STEPS, select_steps
+    assert select_steps(None, None) == WINDOW_STEPS
+
+
+def test_select_steps_from_step_skips_earlier() -> None:
+    from pipelines.run_inference_pipeline import select_steps
+    selected = select_steps("engineer_gold", None)
+    names = [s.name for s in selected]
+    assert names[0] == "engineer_gold"
+    assert "extract_gee" not in names
+    assert "append_silver" not in names
+    assert names[-1] == "log_summary"
+
+
+def test_select_steps_to_step_truncates_later() -> None:
+    from pipelines.run_inference_pipeline import select_steps
+    selected = select_steps(None, "predict")
+    names = [s.name for s in selected]
+    assert names[0] == "extract_gee"
+    assert names[-1] == "predict"
+    assert "write_outputs" not in names
+
+
+def test_validate_args_rejects_inverted_step_range() -> None:
+    from pipelines.run_inference_pipeline import _validate_args
+    parser = build_arg_parser()
+    args = parser.parse_args(["--mode", "latest", "--from-step", "predict", "--to-step", "extract_gee"])
+    with pytest.raises(SystemExit):
+        _validate_args(args)
+
+
+def test_process_window_runs_only_selected_steps(monkeypatch) -> None:
+    """Smoke: process_window with a sliced steps list runs only those steps."""
+    import pipelines.run_inference_pipeline as orch
+    from pipelines.run_inference_pipeline import WindowStep, select_steps
+
+    ran: list[str] = []
+    patched = [
+        WindowStep(s.name, s.description, func=(lambda ctx, n=s.name: ran.append(n)), is_write_step=s.is_write_step)
+        for s in orch.WINDOW_STEPS
+    ]
+    monkeypatch.setattr(orch, "WINDOW_STEPS", patched)
+    sliced = select_steps("engineer_gold", "predict")
+    # select_steps reads from the patched WINDOW_STEPS, so re-slice from it
+    sliced = patched[2:5]  # engineer_gold, load_model, predict
+
+    grid_date = EPOCH_START + timedelta(days=10)
+    process_window(grid_date, dry_run=False, no_write=False, bq_client=MagicMock(), steps=sliced)
+
+    assert ran == ["engineer_gold", "load_model", "predict"]

@@ -271,6 +271,7 @@ def process_window(
     dry_run: bool,
     no_write: bool,
     bq_client: object | None = None,
+    steps: list[WindowStep] | None = None,
 ) -> WindowOutcome:
     """Run the per-window pipeline. Steps with no implementation are logged as TODO."""
     skipped: list[str] = []
@@ -281,7 +282,7 @@ def process_window(
         no_write=no_write,
     )
     LOGGER.info("=== window %s ===", window.isoformat())
-    for step in WINDOW_STEPS:
+    for step in (steps if steps is not None else WINDOW_STEPS):
         if step.func is None:
             LOGGER.info("  [TODO ] %s — %s", step.name, step.description)
             skipped.append(step.name)
@@ -382,6 +383,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-write", action="store_true", help="Run everything except BQ/GCS writes.")
     parser.add_argument("--project", default=PROJECT, help=f"GCP project (default: {PROJECT}).")
     parser.add_argument("--log-level", default="INFO")
+    step_names = [s.name for s in WINDOW_STEPS]
+    parser.add_argument(
+        "--from-step",
+        choices=step_names,
+        help="Start each window at this step instead of the first. "
+             "Useful for catch-up runs where silver is already populated.",
+    )
+    parser.add_argument(
+        "--to-step",
+        choices=step_names,
+        help="Stop each window after this step (inclusive).",
+    )
     return parser
 
 
@@ -397,6 +410,20 @@ def _validate_args(args: argparse.Namespace) -> None:
     elif args.mode == "latest":
         if any(v is not None for v in (args.start, args.end, args.date)):
             raise SystemExit("--start/--end/--date are not valid for --mode latest.")
+    if args.from_step and args.to_step:
+        names = [s.name for s in WINDOW_STEPS]
+        if names.index(args.from_step) > names.index(args.to_step):
+            raise SystemExit(
+                f"--from-step {args.from_step!r} comes after --to-step {args.to_step!r} in the pipeline."
+            )
+
+
+def select_steps(from_step: str | None, to_step: str | None) -> list[WindowStep]:
+    """Return WINDOW_STEPS sliced to [from_step, to_step] inclusive."""
+    names = [s.name for s in WINDOW_STEPS]
+    lo = names.index(from_step) if from_step else 0
+    hi = names.index(to_step) + 1 if to_step else len(WINDOW_STEPS)
+    return WINDOW_STEPS[lo:hi]
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -418,6 +445,13 @@ def main(argv: list[str] | None = None) -> None:
         LOGGER.info("Nothing to do; exiting cleanly.")
         return
 
+    steps = select_steps(args.from_step, args.to_step)
+    if steps != WINDOW_STEPS:
+        LOGGER.info(
+            "Step filter active: running %s (from-step=%s, to-step=%s)",
+            [s.name for s in steps], args.from_step, args.to_step,
+        )
+
     if args.dry_run:
         for w in windows:
             LOGGER.info("[DRY RUN] would process window %s", w.isoformat())
@@ -426,7 +460,7 @@ def main(argv: list[str] | None = None) -> None:
     from .bq_utils import get_client
     bq_client = get_client(args.project)
     outcomes = [
-        process_window(w, dry_run=False, no_write=args.no_write, bq_client=bq_client)
+        process_window(w, dry_run=False, no_write=args.no_write, bq_client=bq_client, steps=steps)
         for w in windows
     ]
     LOGGER.info("Inference complete. Windows processed: %d.", len(outcomes))
