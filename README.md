@@ -324,6 +324,26 @@ Then open:
 http://127.0.0.1:8080/frontend/
 ```
 
+### SoCal AOI UI
+
+A separate static UI for the GEE AOI MVP lives in
+[frontend-socal/index.html](/Users/tomas/Documents/02d-USF-MSDS/MSDS603/openfire/frontend-socal/index.html).
+It is isolated from the existing Bay Area demo UI and uses checked-in static assets:
+
+- [frontend-socal/data/aoi_counties.geojson](/Users/tomas/Documents/02d-USF-MSDS/MSDS603/openfire/frontend-socal/data/aoi_counties.geojson)
+- [frontend-socal/data/socal_demo_manifest.json](/Users/tomas/Documents/02d-USF-MSDS/MSDS603/openfire/frontend-socal/data/socal_demo_manifest.json)
+- [frontend-socal/data/socal_20240726_risk.geojson](/Users/tomas/Documents/02d-USF-MSDS/MSDS603/openfire/frontend-socal/data/socal_20240726_risk.geojson)
+
+From the same repo-root static server, open:
+
+```text
+http://127.0.0.1:8080/frontend-socal/
+```
+
+The SoCal UI renders the canonical four-county training AOI from `src/pipelines/aoi.py`
+and a synthetic 65,000-point `2024-07-26` risk snapshot shaped like the inference output
+writer contract. It is demo data only until live inference snapshots are available.
+
 If you also want API-backed fetches, run the backend in a second terminal:
 
 ```bash

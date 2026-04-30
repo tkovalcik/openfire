@@ -1,0 +1,9 @@
+{
+  "latest_window_start_date": "2024-07-26",
+  "latest_geojson_uri": "./data/socal_20240726_risk.geojson",
+  "model_version": "socal-static-demo-v0",
+  "updated_at": "2026-04-30T00:00:00+00:00",
+  "aoi_geojson_uri": "./data/aoi_counties.geojson",
+  "status": "static_synthetic_demo",
+  "source": "Synthetic MVP layer shaped like src.pipelines.output_writer manifest output; not live inference."
+}
