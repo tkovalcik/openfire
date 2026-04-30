@@ -208,10 +208,85 @@ def test_update_manifest_writes_required_schema(tmp_path: Path) -> None:
     }
 
 
+def test_update_manifest_does_not_regress_to_older_window(tmp_path: Path) -> None:
+    """A re-run on an older window must not regress the manifest pointer."""
+    storage = _local_storage(tmp_path)
+    prefix = f"local://{tmp_path}/predictions"
+
+    update_manifest(
+        latest_window_start_date=date(2026, 4, 17),
+        latest_geojson_uri="gs://openfire/predictions/predictions_20260417.geojson",
+        model_version="m1",
+        updated_at=datetime(2026, 4, 30, 8, 15, tzinfo=timezone.utc),
+        storage=storage, gcs_prefix=prefix,
+    )
+    update_manifest(
+        latest_window_start_date=date(2026, 4, 12),
+        latest_geojson_uri="gs://openfire/predictions/predictions_20260412.geojson",
+        model_version="m1",
+        updated_at=datetime(2026, 4, 30, 10, 1, tzinfo=timezone.utc),
+        storage=storage, gcs_prefix=prefix,
+    )
+
+    payload = json.loads(Path(f"{tmp_path}/predictions/{MANIFEST_FILENAME}").read_text())
+    assert payload["latest_window_start_date"] == "2026-04-17"
+    assert payload["latest_geojson_uri"].endswith("predictions_20260417.geojson")
+
+
+def test_update_manifest_advances_to_newer_window(tmp_path: Path) -> None:
+    storage = _local_storage(tmp_path)
+    prefix = f"local://{tmp_path}/predictions"
+
+    update_manifest(
+        latest_window_start_date=date(2026, 4, 12),
+        latest_geojson_uri="gs://openfire/predictions/predictions_20260412.geojson",
+        model_version="m1",
+        updated_at=datetime(2026, 4, 30, 8, 0, tzinfo=timezone.utc),
+        storage=storage, gcs_prefix=prefix,
+    )
+    update_manifest(
+        latest_window_start_date=date(2026, 4, 17),
+        latest_geojson_uri="gs://openfire/predictions/predictions_20260417.geojson",
+        model_version="m1",
+        updated_at=datetime(2026, 4, 30, 8, 15, tzinfo=timezone.utc),
+        storage=storage, gcs_prefix=prefix,
+    )
+
+    payload = json.loads(Path(f"{tmp_path}/predictions/{MANIFEST_FILENAME}").read_text())
+    assert payload["latest_window_start_date"] == "2026-04-17"
+
+
+def test_update_manifest_rewrites_on_same_window(tmp_path: Path) -> None:
+    """Same-window re-run refreshes model_version / updated_at (e.g., a model
+    promotion landed)."""
+    storage = _local_storage(tmp_path)
+    prefix = f"local://{tmp_path}/predictions"
+
+    update_manifest(
+        latest_window_start_date=date(2026, 4, 17),
+        latest_geojson_uri="gs://openfire/predictions/predictions_20260417.geojson",
+        model_version="m1",
+        updated_at=datetime(2026, 4, 30, 8, 15, tzinfo=timezone.utc),
+        storage=storage, gcs_prefix=prefix,
+    )
+    update_manifest(
+        latest_window_start_date=date(2026, 4, 17),
+        latest_geojson_uri="gs://openfire/predictions/predictions_20260417.geojson",
+        model_version="m2",
+        updated_at=datetime(2026, 4, 30, 12, 0, tzinfo=timezone.utc),
+        storage=storage, gcs_prefix=prefix,
+    )
+
+    payload = json.loads(Path(f"{tmp_path}/predictions/{MANIFEST_FILENAME}").read_text())
+    assert payload["model_version"] == "m2"
+    assert payload["updated_at"] == "2026-04-30T12:00:00+00:00"
+
+
 def test_update_manifest_uses_single_atomic_write() -> None:
     """Manifest writer makes exactly one upload — the GCS object PUT is atomic
     on its own; no temp-then-rename ceremony is needed (or done)."""
     storage = MagicMock(spec=StorageClient)
+    storage.exists.return_value = False
     storage.write_json.return_value = "gs://x/manifest.json"
     update_manifest(
         latest_window_start_date=date(2026, 4, 23),
