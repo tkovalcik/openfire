@@ -1,0 +1,187 @@
+:root {
+  --bg: #f4f2ee;
+  --panel: rgba(255, 255, 255, 0.94);
+  --ink: #1e2b26;
+  --muted: #5b6762;
+  --line: rgba(40, 58, 50, 0.18);
+  --shadow: 0 16px 42px rgba(31, 42, 36, 0.16);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 350px 1fr;
+}
+
+.sidebar {
+  display: grid;
+  align-content: start;
+  gap: 1rem;
+  padding: 1rem;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+}
+
+.brand-block,
+.panel {
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.eyebrow {
+  margin: 0 0 0.35rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.72rem;
+  color: #6d4f2b;
+}
+
+h1,
+h2 {
+  margin: 0;
+}
+
+h1 {
+  font-size: 1.75rem;
+  line-height: 1.1;
+}
+
+h2 {
+  font-size: 0.95rem;
+  margin-bottom: 0.75rem;
+}
+
+.lede,
+.status-message {
+  margin: 0.55rem 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.metadata-grid {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.metadata-grid div {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.metadata-grid dt {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #6c786f;
+}
+
+.metadata-grid dd {
+  margin: 0;
+  font-size: 0.96rem;
+  font-weight: 650;
+}
+
+.legend {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.legend-row {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.92rem;
+}
+
+.legend-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.16);
+}
+
+.map-shell {
+  padding: 0;
+}
+
+#map {
+  width: 100%;
+  height: 100vh;
+}
+
+.county-label {
+  width: auto;
+  height: auto;
+  border: 0;
+  background: transparent;
+}
+
+.county-label span {
+  display: block;
+  width: max-content;
+  transform: translate(-50%, -50%);
+  padding: 0.22rem 0.45rem;
+  border: 1px solid rgba(31, 42, 36, 0.2);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.88);
+  color: #17231e;
+  font-size: 0.76rem;
+  font-weight: 700;
+  box-shadow: 0 6px 18px rgba(31, 42, 36, 0.14);
+  white-space: nowrap;
+}
+
+.leaflet-tooltip.risk-tooltip {
+  border: 0;
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  background: rgba(25, 34, 30, 0.94);
+  color: #fff;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+}
+
+.tooltip-grid {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 190px;
+}
+
+.tooltip-grid strong {
+  font-size: 0.95rem;
+}
+
+@media (max-width: 960px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  #map {
+    height: 68vh;
+  }
+}
