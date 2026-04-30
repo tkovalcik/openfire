@@ -41,6 +41,7 @@ RUN groupadd --system --gid 10001 openfire && \
 
 COPY --from=builder /opt/venv /opt/venv
 COPY src /app/src
+COPY data_pipelines /app/data_pipelines
 
 RUN chown -R openfire:openfire /app /home/openfire
 

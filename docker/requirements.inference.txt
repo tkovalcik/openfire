@@ -14,3 +14,4 @@ google-cloud-bigquery==3.41.0
 google-cloud-storage==3.10.1
 db-dtypes==1.5.1
 earthengine-api==1.7.21
+pydantic==2.11.4
