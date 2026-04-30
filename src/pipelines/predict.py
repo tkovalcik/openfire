@@ -25,7 +25,7 @@ from typing import Any
 
 import pandas as pd
 
-from serving.model_loader import LoadedModel, load_registry_model_bundle
+from src.serving.model_loader import LoadedModel, load_registry_model_bundle
 
 
 LOGGER = logging.getLogger(__name__)

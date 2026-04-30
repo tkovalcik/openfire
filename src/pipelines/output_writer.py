@@ -36,7 +36,7 @@ from typing import Any
 import pandas as pd
 
 try:
-    from common.storage import StorageClient
+    from src.common.storage import StorageClient
 except ImportError:  # pragma: no cover - exercised by python -m src...
     from src.common.storage import StorageClient
 
