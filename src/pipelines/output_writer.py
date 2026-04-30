@@ -33,6 +33,8 @@ import logging
 from datetime import date
 from typing import Any
 
+from src.common.storage import StorageError
+
 import pandas as pd
 
 try:
@@ -184,6 +186,20 @@ def write_geojson_snapshot(
 
 # ── manifest ─────────────────────────────────────────────────────────────────
 
+def _read_existing_manifest_window(storage: StorageClient, uri: str) -> date | None:
+    """Return the existing manifest's latest_window_start_date, or None if no
+    usable manifest is present. A corrupt or unreadable manifest is treated as
+    absent (logged) so a re-run can recover by overwriting it."""
+    try:
+        if not storage.exists(uri):
+            return None
+        existing = storage.read_json(uri)
+        return date.fromisoformat(existing["latest_window_start_date"])
+    except (StorageError, KeyError, ValueError, TypeError) as exc:
+        LOGGER.warning("Existing manifest at %s unreadable (%s); will overwrite.", uri, exc)
+        return None
+
+
 def update_manifest(
     *,
     latest_window_start_date: date,
@@ -193,12 +209,29 @@ def update_manifest(
     storage: StorageClient,
     gcs_prefix: str = DEFAULT_GCS_PREFIX,
 ) -> str:
-    """Overwrite manifest.json with a pointer to the most recent snapshot.
+    """Monotonically advance manifest.json to point at the most recent snapshot.
+
+    The manifest tracks the *frontier* of inference, not the most-recently-run
+    window. Re-running an older window (e.g., a manual single-window rerun
+    after a backfill has already advanced the frontier) must not regress the
+    pointer — the UI would otherwise show stale predictions. If the existing
+    manifest's window is newer than ours, this is a no-op and we return the
+    existing URI unchanged. Equal-or-newer windows write through (so model
+    version / updated_at refresh on a same-window re-run).
 
     GCS object PUTs are atomic; the UI sees either the old manifest or the
     new one, never a partial. No temp-then-rename dance required.
     """
     uri = manifest_uri(gcs_prefix=gcs_prefix)
+    existing_window = _read_existing_manifest_window(storage, uri)
+    if existing_window is not None and existing_window > latest_window_start_date:
+        LOGGER.warning(
+            "Skipping manifest update at %s: existing window %s is newer than %s "
+            "(refusing to regress the frontier).",
+            uri, existing_window.isoformat(), latest_window_start_date.isoformat(),
+        )
+        return uri
+
     payload = {
         "latest_window_start_date": latest_window_start_date.isoformat(),
         "latest_geojson_uri": latest_geojson_uri,
