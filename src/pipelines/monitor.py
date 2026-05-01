@@ -28,7 +28,7 @@ from typing import Any
 import pandas as pd
 
 from src.common.storage import StorageClient
-from src.pipelines.train import FEATURE_COLUMNS, TARGET_COLUMN
+from src.pipelines.train import FEATURE_COLUMNS
 
 
 LOGGER = logging.getLogger(__name__)

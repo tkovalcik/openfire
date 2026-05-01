@@ -382,7 +382,7 @@ def test_drift_report_no_drift_on_identical_data() -> None:
 
 def test_update_monitoring_index_upsert_and_sort() -> None:
     """update_monitoring_index upserts entries and keeps the list sorted."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
     from pipelines.output_writer import update_monitoring_index
 
     storage = MagicMock()
