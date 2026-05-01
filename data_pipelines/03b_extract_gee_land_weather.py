@@ -42,7 +42,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from src.pipelines.aoi import DEFAULT_AOI, get_aoi_counties  # noqa: E402  (needs sys.path tweak above)
+from src.pipelines.aoi import DEFAULT_AOI, get_aoi_counties, get_grid_asset_id  # noqa: E402  (needs sys.path tweak above)
 from src.pipelines.date_grid import (  # noqa: E402  (needs sys.path tweak above)
     EPOCH_START,
     STEP_DAYS,
@@ -106,21 +106,30 @@ def build_static_topo() -> "ee.Image":
     ]).toFloat()
 
 
-def build_aoi_context(aoi_counties: list[str], grid_scale: int) -> tuple["ee.Geometry", "ee.FeatureCollection"]:
+def build_aoi_context(
+    aoi_counties: list[str],
+    grid_scale: int,
+    *,
+    grid_asset_id: str | None = None,
+) -> tuple["ee.Geometry", "ee.FeatureCollection"]:
     counties = ee.FeatureCollection("TIGER/2018/Counties")
     aoi = counties.filter(ee.Filter.And(
         ee.Filter.eq("STATEFP", "06"),
         ee.Filter.inList("NAME", aoi_counties),
     ))
     aoi_geom = aoi.geometry()
-    grid = aoi_geom.coveringGrid("EPSG:4326", grid_scale)
-    base_grid = grid.map(lambda cell: ee.Feature(
-        ee.Geometry.Point(cell.geometry().centroid(1).coordinates()),
-        {
-            "latitude": cell.geometry().centroid(1).coordinates().get(1),
-            "longitude": cell.geometry().centroid(1).coordinates().get(0),
-        }
-    ))
+    if grid_asset_id is not None:
+        base_grid = ee.FeatureCollection(grid_asset_id)
+    else:
+        # Non-deterministic fallback — only used before 08_freeze_grid.py is run.
+        grid = aoi_geom.coveringGrid("EPSG:4326", grid_scale)
+        base_grid = grid.map(lambda cell: ee.Feature(
+            ee.Geometry.Point(cell.geometry().centroid(1).coordinates()),
+            {
+                "latitude": cell.geometry().centroid(1).coordinates().get(1),
+                "longitude": cell.geometry().centroid(1).coordinates().get(0),
+            }
+        ))
     return aoi_geom, base_grid
 
 
@@ -415,7 +424,13 @@ def main(argv: list[str] | None = None) -> None:
     if args.cancel_existing:
         cancel_existing_tasks()
 
-    aoi_geom, base_grid = build_aoi_context(aoi_counties, GRID_SCALE)
+    grid_asset_id = get_grid_asset_id(args.aoi)
+    if grid_asset_id:
+        print(f"Using pinned grid asset: {grid_asset_id}")
+    else:
+        print(f"WARNING: No pinned grid for AOI={args.aoi}; using dynamic coveringGrid (non-deterministic)")
+        print("         Run data_pipelines/08_freeze_grid.py to fix this.")
+    aoi_geom, base_grid = build_aoi_context(aoi_counties, GRID_SCALE, grid_asset_id=grid_asset_id)
     static_topo = build_static_topo()
     print(f"Grid cells (approx): {base_grid.size().getInfo()}")
 
