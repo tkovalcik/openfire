@@ -1,5 +1,89 @@
 # OpenFire
 
+OpenFire is a wildfire risk assessment ML platform for four Southern California counties (Kern, Los Angeles, San Luis Obispo, Santa Barbara). The capstone pipeline ingests Sentinel-2 and gridMET data via Google Earth Engine, engineers lag-delta features in BigQuery, trains an XGBoost classifier, and runs scheduled inference every 5 days — publishing predictions as GeoJSON snapshots consumed by a live Leaflet map.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full data-flow diagram and component guide.
+
+---
+
+## ML pipeline — quickstart
+
+### Prerequisites
+
+- `openfire` conda env (or equivalent with dependencies below)
+- GCP credentials: `gcloud auth application-default login`
+- Environment variables set (copy `.env.example` → `.env` and populate):
+  - `MLFLOW_TRACKING_URI` — MLflow server URL
+  - `OPENFIRE_GCS_BUCKET` — GCS bucket name
+  - `GCP_PROJECT_ID` — GCP project ID
+
+### Training
+
+Reads gold Parquet shards from GCS, trains XGBoost with 2024 as the holdout year, and registers the model as `openfire-gold` in MLflow.
+
+```bash
+conda activate openfire
+python -m src.pipelines.train \
+  --gcs-prefix "gs://${OPENFIRE_GCS_BUCKET}/openfire/datasets/gold/" \
+  --validation-year 2024 \
+  --mlflow-tracking-uri "${MLFLOW_TRACKING_URI}"
+```
+
+Typical runtime: ~25 min on a local machine with 16+ GiB RAM (or run via the `train.yml` GitHub Actions workflow on Cloud Run Job `openfire-train`).
+
+### Inference — manual run
+
+Process a single grid-aligned window (smoke test):
+
+```bash
+python -m src.pipelines.run_inference_pipeline \
+  --mode window --date 2026-04-17
+```
+
+Process a historical range (skipping GEE if silver is already populated):
+
+```bash
+python -m src.pipelines.run_inference_pipeline \
+  --mode backfill --start 2026-01-01 --end 2026-04-17 \
+  --from-step engineer_gold
+```
+
+Catch up to the most recent unprocessed grid date (same mode Cloud Scheduler uses):
+
+```bash
+python -m src.pipelines.run_inference_pipeline --mode latest
+```
+
+Dry-run (prints the window plan, touches nothing):
+
+```bash
+python -m src.pipelines.run_inference_pipeline --mode latest --dry-run
+```
+
+### Viewing predictions
+
+The live frontend reads `manifest.json` from GCS to find the latest GeoJSON snapshot.
+
+Check the current frontier:
+
+```bash
+bq query --nouse_legacy_sql \
+  "SELECT MAX(window_start_date) FROM \`${GCP_PROJECT_ID}.openfire_features.predictions_history\`"
+```
+
+### Scheduled inference
+
+Cloud Scheduler fires daily at 08:00 UTC and triggers the inference Cloud Run Job in `--mode latest`. No manual action required for steady-state operation.
+
+To force a run immediately:
+
+```bash
+gcloud scheduler jobs run openfire-inference-daily \
+  --location us-central1
+```
+
+---
+
 OpenFire is a cloud-storage-first geospatial ML repository for satellite-based wildfire risk
 assessment. The repository is intentionally opinionated:
 
