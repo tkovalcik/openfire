@@ -31,7 +31,8 @@ Per-window flow:
     4. load_model    — fetch openfire-gold Production bundle from MLflow.
     5. predict       — read gold_features_inference for the window, score rows.
     6. write_outputs — BQ partition-scoped truncate, GeoJSON snapshot, manifest.
-    7. log_summary   — row counts, runtime, model version.
+    7. monitor       — Evidently drift report; update monitoring index in GCS.
+    8. log_summary   — row counts, runtime, model version.
 
 Data-readiness note: ``days_since_last_burn`` is derived from Cal Fire FRAP
 burn perimeters which publish annually with ~3–6 months lag. As of 2026-04-29,
@@ -236,6 +237,22 @@ def _step_write_outputs(ctx: WindowContext) -> None:
     )
 
 
+def _step_monitor(ctx: WindowContext) -> None:
+    from src.common.storage import StorageClient
+    from .monitor import run_window_monitoring
+    from .output_writer import update_monitoring_index
+
+    storage = StorageClient(gcp_project_id=PROJECT)
+    metadata = run_window_monitoring(
+        ctx.window,
+        bq_client=ctx.bq_client,
+        loaded_model=ctx.loaded_model,
+        storage=storage,
+    )
+    if not metadata.get("skipped"):
+        update_monitoring_index(metadata, storage=storage)
+
+
 def _step_log_summary(ctx: WindowContext) -> None:
     LOGGER.info(
         "  window=%s rows_engineered=%s rows_predicted=%s",
@@ -252,6 +269,7 @@ WINDOW_STEPS: list[WindowStep] = [
     WindowStep("load_model",    "Load openfire-gold Production from MLflow",       func=_step_load_model),
     WindowStep("predict",       "Score the window's gold features",                func=_step_predict),
     WindowStep("write_outputs", "BQ partition truncate + GeoJSON snapshot + manifest", func=_step_write_outputs, is_write_step=True),
+    WindowStep("monitor",       "Evidently drift report + monitoring index update", func=_step_monitor, is_write_step=True),
     WindowStep("log_summary",   "Log row counts, runtime, model version",          func=_step_log_summary),
 ]
 

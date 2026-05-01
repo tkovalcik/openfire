@@ -23,7 +23,7 @@ Authored 2026-04-28 from the state of `dev` at commit `639def4`.
   `table_exists` + logs `get_row_count` from `bq_utils`.
 - `get_client(project)` is called only after the dry-run early-return — so
   dry-run never opens a BQ session. **The orchestrator dry-run test
-  (`test_capstone_pipeline.py::test_orchestrator_dry_run`) patches
+  (`test_pipeline.py::test_orchestrator_dry_run`) patches
   `get_client` and asserts it is never called; mirror this in the inference
   orchestrator's tests.**
 - Logging: stdlib `logging.basicConfig` at INFO with a fixed format;

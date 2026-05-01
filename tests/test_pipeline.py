@@ -314,3 +314,109 @@ def test_temporal_split_unknown_year_raises() -> None:
                        "burned_in_next_15_days": [False] * 12})
     with pytest.raises(ValueError, match="No rows for validation year"):
         temporal_split(df, validation_year="2099")
+
+
+# ── monitoring: Evidently drift report unit tests ─────────────────────────────
+
+def _make_monitoring_frames(
+    n: int = 100,
+    *,
+    shift_column: str = "mean_NDVI",
+    shift_amount: float = 5.0,
+    random_state: int = 0,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build synthetic reference and current DataFrames for monitoring tests.
+
+    The current DataFrame has `shift_column` shifted by `shift_amount` relative
+    to the reference, so Evidently should flag it as drifted.
+    """
+    from pipelines.train import FEATURE_COLUMNS
+    from pipelines.monitor import PREDICTION_COLUMN
+
+    rng = __import__("numpy").random.default_rng(random_state)
+    ref = pd.DataFrame(
+        {col: rng.standard_normal(n).astype("float32") for col in FEATURE_COLUMNS},
+    )
+    ref[PREDICTION_COLUMN] = rng.random(n).astype("float64")
+
+    cur = ref.copy()
+    cur[shift_column] = cur[shift_column] + shift_amount  # large shift → guaranteed drift
+    cur[PREDICTION_COLUMN] = rng.random(n).astype("float64")
+
+    return ref, cur
+
+
+@pytest.mark.skipif(
+    __import__("importlib").util.find_spec("evidently") is None,
+    reason="evidently not installed",
+)
+def test_drift_report_flags_shifted_feature() -> None:
+    """build_drift_report detects drift when a feature has a large known shift."""
+    from pipelines.train import FEATURE_COLUMNS
+    from pipelines.monitor import build_drift_report
+
+    ref, cur = _make_monitoring_frames(n=200, shift_column="mean_NDVI", shift_amount=10.0)
+    html, summary = build_drift_report(ref, cur, feature_columns=FEATURE_COLUMNS)
+
+    assert isinstance(html, str) and len(html) > 100
+    assert summary["n_drifted_features"] > 0, "Expected at least one drifted feature"
+    top_features = [f["feature"] for f in summary["top_drifted_features"]]
+    assert "mean_NDVI" in top_features, f"mean_NDVI not in top drifted features: {top_features}"
+
+
+@pytest.mark.skipif(
+    __import__("importlib").util.find_spec("evidently") is None,
+    reason="evidently not installed",
+)
+def test_drift_report_no_drift_on_identical_data() -> None:
+    """build_drift_report reports no drift when reference == current."""
+    from pipelines.train import FEATURE_COLUMNS
+    from pipelines.monitor import build_drift_report
+
+    ref, _ = _make_monitoring_frames(n=200)
+    _html, summary = build_drift_report(ref, ref.copy(), feature_columns=FEATURE_COLUMNS)
+
+    assert summary["dataset_drift"] is False
+    assert summary["drift_status"] in ("green", "yellow")
+
+
+def test_update_monitoring_index_upsert_and_sort() -> None:
+    """update_monitoring_index upserts entries and keeps the list sorted."""
+    from unittest.mock import MagicMock, patch
+    from pipelines.output_writer import update_monitoring_index
+
+    storage = MagicMock()
+    storage.exists.return_value = False  # no existing index
+
+    entry_a = {"window_start_date": "2026-01-01", "drift_status": "green"}
+    entry_b = {"window_start_date": "2026-01-06", "drift_status": "red"}
+    entry_c = {"window_start_date": "2026-01-01", "drift_status": "yellow"}  # overwrite a
+
+    update_monitoring_index(entry_a, storage=storage)
+    update_monitoring_index(entry_b, storage=storage)
+
+    # Simulate that the second call sees the first entry in the "existing" index
+    stored_after_first = storage.write_json.call_args_list[0][0][1]
+    storage.exists.return_value = True
+    storage.read_json.return_value = stored_after_first
+
+    update_monitoring_index(entry_c, storage=storage)
+
+    final_call_args = storage.write_json.call_args_list[-1][0][1]
+    windows = final_call_args["windows"]
+    dates = [w["window_start_date"] for w in windows]
+    assert dates == sorted(dates), "Index windows are not sorted by date"
+    # entry_a should be replaced by entry_c
+    entry_for_0101 = next(w for w in windows if w["window_start_date"] == "2026-01-01")
+    assert entry_for_0101["drift_status"] == "yellow"
+
+
+def test_monitoring_index_uri() -> None:
+    """index_uri returns the expected GCS path."""
+    from pipelines.monitor import index_uri
+
+    uri = index_uri()
+    assert uri == "gs://openfire/monitoring/index.json"
+
+    uri_custom = index_uri(monitoring_prefix="gs://my-bucket/mon")
+    assert uri_custom == "gs://my-bucket/mon/index.json"
