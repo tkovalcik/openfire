@@ -243,15 +243,61 @@ def update_manifest(
     return uri
 
 
+# ── monitoring index ──────────────────────────────────────────────────────────
+
+DEFAULT_MONITORING_PREFIX = "gs://openfire/monitoring"
+MONITORING_INDEX_FILENAME = "index.json"
+
+
+def monitoring_index_uri(*, monitoring_prefix: str = DEFAULT_MONITORING_PREFIX) -> str:
+    return f"{monitoring_prefix.rstrip('/')}/{MONITORING_INDEX_FILENAME}"
+
+
+def update_monitoring_index(
+    entry: dict,
+    *,
+    storage: StorageClient,
+    monitoring_prefix: str = DEFAULT_MONITORING_PREFIX,
+) -> str:
+    """Upsert a per-window entry into the monitoring index.json.
+
+    The index holds a sorted list of window entries. Re-running the same window
+    overwrites that entry (idempotent). The list is sorted by window_start_date
+    ascending so the dashboard can walk windows in order.
+    """
+    uri = monitoring_index_uri(monitoring_prefix=monitoring_prefix)
+
+    try:
+        windows: list = storage.read_json(uri).get("windows", []) if storage.exists(uri) else []
+    except Exception as exc:
+        LOGGER.warning(
+            "Could not read monitoring index at %s (%s); starting fresh.", uri, exc
+        )
+        windows = []
+
+    window_date = entry.get("window_start_date")
+    windows = [w for w in windows if w.get("window_start_date") != window_date]
+    windows.append(entry)
+    windows.sort(key=lambda w: w.get("window_start_date", ""))
+
+    storage.write_json(uri, {"windows": windows})
+    LOGGER.info("Updated monitoring index at %s (%d entries)", uri, len(windows))
+    return uri
+
+
 __all__ = [
     "PREDICTIONS_TABLE",
     "PREDICTION_COLUMNS",
     "DEFAULT_GCS_PREFIX",
     "MANIFEST_FILENAME",
+    "DEFAULT_MONITORING_PREFIX",
+    "MONITORING_INDEX_FILENAME",
     "build_geojson_payload",
     "snapshot_uri",
     "manifest_uri",
+    "monitoring_index_uri",
     "write_predictions_to_bq",
     "write_geojson_snapshot",
     "update_manifest",
+    "update_monitoring_index",
 ]
