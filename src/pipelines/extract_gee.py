@@ -27,7 +27,7 @@ from google.cloud import bigquery
 if TYPE_CHECKING:
     import ee
 
-from .aoi import DEFAULT_AOI, get_aoi_counties
+from .aoi import DEFAULT_AOI, get_aoi_counties, get_grid_asset_id
 from .date_grid import STEP_DAYS
 
 LOGGER = logging.getLogger(__name__)
@@ -132,6 +132,8 @@ def _build_static_topo() -> "ee.Image":
 
 def _build_aoi_context(
     aoi_counties: list[str],
+    *,
+    grid_asset_id: str | None = None,
 ) -> tuple["ee.Geometry", "ee.FeatureCollection"]:
     import ee
     counties = ee.FeatureCollection("TIGER/2018/Counties")
@@ -140,14 +142,18 @@ def _build_aoi_context(
         ee.Filter.inList("NAME", aoi_counties),
     ))
     aoi_geom = aoi.geometry()
-    grid = aoi_geom.coveringGrid("EPSG:4326", GRID_SCALE)
-    base_grid = grid.map(lambda cell: ee.Feature(
-        ee.Geometry.Point(cell.geometry().centroid(1).coordinates()),
-        {
-            "latitude":  cell.geometry().centroid(1).coordinates().get(1),
-            "longitude": cell.geometry().centroid(1).coordinates().get(0),
-        },
-    ))
+    if grid_asset_id is not None:
+        base_grid = ee.FeatureCollection(grid_asset_id)
+    else:
+        # Non-deterministic fallback — only used before 08_freeze_grid.py is run.
+        grid = aoi_geom.coveringGrid("EPSG:4326", GRID_SCALE)
+        base_grid = grid.map(lambda cell: ee.Feature(
+            ee.Geometry.Point(cell.geometry().centroid(1).coordinates()),
+            {
+                "latitude":  cell.geometry().centroid(1).coordinates().get(1),
+                "longitude": cell.geometry().centroid(1).coordinates().get(0),
+            },
+        ))
     return aoi_geom, base_grid
 
 
@@ -292,9 +298,18 @@ def extract_gee_window(
     import ee
 
     aoi_counties = get_aoi_counties(aoi)
+    grid_asset_id = get_grid_asset_id(aoi)
+    if grid_asset_id:
+        LOGGER.info("Using pinned grid asset %s", grid_asset_id)
+    else:
+        LOGGER.warning(
+            "No pinned grid asset for AOI=%s; using dynamic coveringGrid "
+            "(non-deterministic — run 08_freeze_grid.py to fix)",
+            aoi,
+        )
     ee.Initialize(project=project)
 
-    aoi_geom, base_grid = _build_aoi_context(aoi_counties)
+    aoi_geom, base_grid = _build_aoi_context(aoi_counties, grid_asset_id=grid_asset_id)
     static_topo = _build_static_topo()
     fc = _build_feature_collection(
         window_date, aoi_geom=aoi_geom, base_grid=base_grid, static_topo=static_topo
