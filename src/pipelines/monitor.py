@@ -106,12 +106,18 @@ def build_drift_report(
     monitored_cols = feature_columns + [PREDICTION_COLUMN]
     col_map = ColumnMapping(numerical_features=monitored_cols)
 
+    # Cast to float64 explicitly — days_since_last_burn is int64 from BQ, and
+    # mixed int/float dtypes trigger a numpy 2.x AttributeError in evidently's
+    # corrcoef path (scl returns as Python float, not ndarray).
+    ref_data = reference[monitored_cols].astype("float64")
+    cur_data = current[monitored_cols].astype("float64")
+
     report = Report(
         metrics=[DataDriftPreset(drift_share=DRIFT_THRESHOLD)],
     )
     report.run(
-        reference_data=reference[monitored_cols],
-        current_data=current[monitored_cols],
+        reference_data=ref_data,
+        current_data=cur_data,
         column_mapping=col_map,
     )
 
@@ -139,7 +145,12 @@ def _get_report_html(report: Any) -> str:
 
 
 def _extract_summary(result: dict[str, Any], *, n_features: int) -> dict[str, Any]:
-    """Pull the key drift metrics out of Evidently's as_dict() result."""
+    """Pull the key drift metrics out of Evidently's JSON result.
+
+    Compatible with both the 0.4.x layout (DatasetDriftMetric carries
+    drift_by_columns) and the 0.5.x layout (DatasetDriftMetric carries
+    counts only; DataDriftTable carries drift_by_columns).
+    """
     metrics = result.get("metrics", [])
     dataset_metric = next(
         (m for m in metrics if "DatasetDrift" in m.get("metric", "")),
@@ -151,7 +162,16 @@ def _extract_summary(result: dict[str, Any], *, n_features: int) -> dict[str, An
     share = dr.get("share_of_drifted_columns", 0.0)
     dataset_drift = dr.get("dataset_drift", False)
 
-    per_col = dr.get("drift_by_columns", {})
+    # 0.4.x: drift_by_columns is on DatasetDriftMetric.
+    # 0.5.x+: drift_by_columns moved to DataDriftTable.
+    per_col = dr.get("drift_by_columns") or {}
+    if not per_col:
+        table_metric = next(
+            (m for m in metrics if "DataDriftTable" in m.get("metric", "")),
+            {},
+        )
+        per_col = table_metric.get("result", {}).get("drift_by_columns") or {}
+
     drifted = sorted(
         [
             {"feature": col, "drift_score": float(info.get("drift_score", 0.0))}

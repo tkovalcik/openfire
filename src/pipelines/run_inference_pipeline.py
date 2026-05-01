@@ -241,12 +241,16 @@ def _step_monitor(ctx: WindowContext) -> None:
     from src.common.storage import StorageClient
     from .monitor import run_window_monitoring
     from .output_writer import update_monitoring_index
+    from .predict import load_production_bundle
+
+    # Load the Production bundle if load_model was skipped (e.g. --from-step monitor).
+    loaded_model = ctx.loaded_model or load_production_bundle()
 
     storage = StorageClient(gcp_project_id=PROJECT)
     metadata = run_window_monitoring(
         ctx.window,
         bq_client=ctx.bq_client,
-        loaded_model=ctx.loaded_model,
+        loaded_model=loaded_model,
         storage=storage,
     )
     if not metadata.get("skipped"):
