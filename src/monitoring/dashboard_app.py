@@ -51,7 +51,7 @@ def _load_index() -> dict[str, Any]:
 
 # ── routes ────────────────────────────────────────────────────────────────────
 
-@app.get("/healthz")
+@app.get("/_health")
 def healthz() -> dict:
     return {"status": "ok"}
 
