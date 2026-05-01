@@ -99,9 +99,9 @@ def build_drift_report(
     needing a separate PredictionDriftPreset and keeps the Evidently import
     surface minimal.
     """
-    from evidently import ColumnMapping
-    from evidently.metric_preset import DataDriftPreset
-    from evidently.report import Report
+    from evidently.legacy.metric_preset import DataDriftPreset
+    from evidently.legacy.pipeline.column_mapping import ColumnMapping
+    from evidently.legacy.report import Report
 
     monitored_cols = feature_columns + [PREDICTION_COLUMN]
     col_map = ColumnMapping(numerical_features=monitored_cols)

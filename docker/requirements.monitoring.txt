@@ -1,7 +1,7 @@
 # Monitoring dashboard service dependencies
-# Pin Evidently to 0.6.x — the API changed materially in 0.5.
-# monitor.py is written against the 0.6.x Report/DataDriftPreset interface.
-evidently==0.6.7
+# Pin Evidently to 0.7.x — the API changed materially in 0.5.
+# monitor.py is written against the 0.7.x legacy Report/DataDriftPreset interface.
+evidently==0.7.21
 
 # FastAPI + server
 fastapi==0.111.0
