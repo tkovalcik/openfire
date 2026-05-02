@@ -1,7 +1,5 @@
 (function () {
-  const localHosts = new Set(["", "localhost", "127.0.0.1", "::1"]);
-  const useLiveManifest =
-    window.OPENFIRE_USE_LIVE_MANIFEST ?? !localHosts.has(window.location.hostname);
+  const useLiveManifest = window.OPENFIRE_USE_LIVE_MANIFEST ?? true;
 
   window.OPENFIRE_SOCAL_CONFIG = {
     manifestUrl: useLiveManifest ? "/data/manifest.json" : "./data/socal_demo_manifest.json",
@@ -9,6 +7,13 @@
     demoManifestUrl: "./data/socal_demo_manifest.json",
     playbackIntervalMs: 750,
     snapshotCacheSize: 8,
+    lowZoomPerformance: {
+      enabled: true,
+      tiers: [
+        { maxZoom: 8, sampleStride: 6, sampleOffset: 2 },
+        { maxZoom: 9, sampleStride: 3, sampleOffset: 1 },
+      ],
+    },
     map: {
       center: [35.2, -119.2],
       zoom: 7,
