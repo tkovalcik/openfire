@@ -434,6 +434,13 @@ Deployments are handled by `.github/workflows/ui_socal.yml`. The service is sepa
 from Sebastian's `openfire-api` production demo so UI iteration does not affect the
 serving API.
 
+The GitHub deployer service account must be able to act as the SoCal UI runtime
+service account. Grant `roles/iam.serviceAccountUser` on the runtime service
+account configured by `SERVICE_ACCOUNT` in `.github/workflows/ui_socal.yml` to
+the GitHub deployer service account configured by `GCP_DEPLOYER_SERVICE_ACCOUNT`;
+without that binding the workflow can build and push the image, but Cloud Run
+deployment fails with `iam.serviceaccounts.actAs` denied.
+
 If you also want API-backed fetches, run the backend in a second terminal:
 
 ```bash
