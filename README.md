@@ -425,8 +425,14 @@ http://127.0.0.1:8080/frontend-socal/
 ```
 
 The SoCal UI renders the canonical four-county training AOI from `src/pipelines/aoi.py`
-and a synthetic 65,000-point `2024-07-26` risk snapshot shaped like the inference output
-writer contract. It is demo data only until live inference snapshots are available.
+and includes a time slider/playback control. Local development uses the checked-in
+synthetic 65,000-point fixture; the deployed `openfire-ui-socal` Cloud Run service
+reads `/data/manifest.json` and `/data/predictions_YYYYMMDD.geojson` through its
+same-origin GCS proxy to `gs://openfire/predictions/`.
+
+Deployments are handled by `.github/workflows/ui_socal.yml`. The service is separate
+from Sebastian's `openfire-api` production demo so UI iteration does not affect the
+serving API.
 
 If you also want API-backed fetches, run the backend in a second terminal:
 
