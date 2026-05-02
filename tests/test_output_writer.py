@@ -203,12 +203,18 @@ def test_update_manifest_writes_required_schema(tmp_path: Path) -> None:
     )
     assert written_uri.endswith(MANIFEST_FILENAME)
     payload = json.loads(Path(written_uri.removeprefix("local://")).read_text())
-    assert payload == {
-        "latest_window_start_date": "2026-04-23",
-        "latest_geojson_uri": "gs://openfire/predictions/predictions_20260423.geojson",
-        "model_version": "7",
-        "updated_at": "2026-04-28T12:00:00+00:00",
-    }
+    assert payload["latest_window_start_date"] == "2026-04-23"
+    assert payload["latest_geojson_uri"] == "gs://openfire/predictions/predictions_20260423.geojson"
+    assert payload["model_version"] == "7"
+    assert payload["updated_at"] == "2026-04-28T12:00:00+00:00"
+    assert payload["windows"] == [
+        {
+            "window_start_date": "2026-04-23",
+            "geojson_uri": "gs://openfire/predictions/predictions_20260423.geojson",
+            "model_version": "7",
+            "updated_at": "2026-04-28T12:00:00+00:00",
+        }
+    ]
 
 
 def test_update_manifest_does_not_regress_to_older_window(tmp_path: Path) -> None:
@@ -234,6 +240,7 @@ def test_update_manifest_does_not_regress_to_older_window(tmp_path: Path) -> Non
     payload = json.loads(Path(f"{tmp_path}/predictions/{MANIFEST_FILENAME}").read_text())
     assert payload["latest_window_start_date"] == "2026-04-17"
     assert payload["latest_geojson_uri"].endswith("predictions_20260417.geojson")
+    assert [item["window_start_date"] for item in payload["windows"]] == ["2026-04-12", "2026-04-17"]
 
 
 def test_update_manifest_advances_to_newer_window(tmp_path: Path) -> None:
@@ -257,6 +264,7 @@ def test_update_manifest_advances_to_newer_window(tmp_path: Path) -> None:
 
     payload = json.loads(Path(f"{tmp_path}/predictions/{MANIFEST_FILENAME}").read_text())
     assert payload["latest_window_start_date"] == "2026-04-17"
+    assert [item["window_start_date"] for item in payload["windows"]] == ["2026-04-12", "2026-04-17"]
 
 
 def test_update_manifest_rewrites_on_same_window(tmp_path: Path) -> None:
@@ -283,6 +291,73 @@ def test_update_manifest_rewrites_on_same_window(tmp_path: Path) -> None:
     payload = json.loads(Path(f"{tmp_path}/predictions/{MANIFEST_FILENAME}").read_text())
     assert payload["model_version"] == "m2"
     assert payload["updated_at"] == "2026-04-30T12:00:00+00:00"
+    assert len(payload["windows"]) == 1
+    assert payload["windows"][0]["model_version"] == "m2"
+    assert payload["windows"][0]["updated_at"] == "2026-04-30T12:00:00+00:00"
+
+
+def test_update_manifest_window_index_is_sorted_and_idempotent(tmp_path: Path) -> None:
+    storage = _local_storage(tmp_path)
+    prefix = f"local://{tmp_path}/predictions"
+
+    update_manifest(
+        latest_window_start_date=date(2026, 4, 17),
+        latest_geojson_uri="gs://openfire/predictions/predictions_20260417.geojson",
+        model_version="m1",
+        updated_at=datetime(2026, 4, 30, 8, 15, tzinfo=timezone.utc),
+        storage=storage,
+        gcs_prefix=prefix,
+    )
+    update_manifest(
+        latest_window_start_date=date(2026, 4, 7),
+        latest_geojson_uri="gs://openfire/predictions/predictions_20260407.geojson",
+        model_version="m1",
+        updated_at=datetime(2026, 4, 30, 8, 20, tzinfo=timezone.utc),
+        storage=storage,
+        gcs_prefix=prefix,
+    )
+    update_manifest(
+        latest_window_start_date=date(2026, 4, 7),
+        latest_geojson_uri="gs://openfire/predictions/predictions_20260407.geojson",
+        model_version="m2",
+        updated_at=datetime(2026, 4, 30, 8, 25, tzinfo=timezone.utc),
+        storage=storage,
+        gcs_prefix=prefix,
+    )
+
+    payload = json.loads(Path(f"{tmp_path}/predictions/{MANIFEST_FILENAME}").read_text())
+    assert payload["latest_window_start_date"] == "2026-04-17"
+    assert [item["window_start_date"] for item in payload["windows"]] == ["2026-04-07", "2026-04-17"]
+    assert payload["windows"][0]["model_version"] == "m2"
+
+
+def test_update_manifest_migrates_old_pointer_only_manifest(tmp_path: Path) -> None:
+    storage = _local_storage(tmp_path)
+    prefix_path = tmp_path / "predictions"
+    prefix_path.mkdir()
+    (prefix_path / MANIFEST_FILENAME).write_text(
+        json.dumps(
+            {
+                "latest_window_start_date": "2026-04-12",
+                "latest_geojson_uri": "gs://openfire/predictions/predictions_20260412.geojson",
+                "model_version": "m1",
+                "updated_at": "2026-04-30T08:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    update_manifest(
+        latest_window_start_date=date(2026, 4, 17),
+        latest_geojson_uri="gs://openfire/predictions/predictions_20260417.geojson",
+        model_version="m1",
+        updated_at=datetime(2026, 4, 30, 8, 15, tzinfo=timezone.utc),
+        storage=storage,
+        gcs_prefix=f"local://{prefix_path}",
+    )
+
+    payload = json.loads((prefix_path / MANIFEST_FILENAME).read_text())
+    assert [item["window_start_date"] for item in payload["windows"]] == ["2026-04-12", "2026-04-17"]
 
 
 def test_update_manifest_uses_single_atomic_write() -> None:

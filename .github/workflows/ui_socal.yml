@@ -1,0 +1,72 @@
+name: Deploy SoCal UI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev]
+    paths:
+      - "frontend-socal/**"
+      - "src/ui_socal/**"
+      - "docker/Dockerfile.ui_socal"
+      - "docker/requirements.ui_socal.txt"
+      - ".github/workflows/ui_socal.yml"
+
+env:
+  GCP_PROJECT: msds603-mlops-project
+  REGION: us-central1
+  SERVICE_NAME: openfire-ui-socal
+  IMAGE: us-central1-docker.pkg.dev/msds603-mlops-project/openfire/ui-socal
+  SERVICE_ACCOUNT: openfire-ui-socal-runner@msds603-mlops-project.iam.gserviceaccount.com
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        run: |
+          docker build -f docker/Dockerfile.ui_socal \
+            -t ${{ env.IMAGE }}:${{ github.sha }} \
+            -t ${{ env.IMAGE }}:latest \
+            .
+          docker push ${{ env.IMAGE }}:${{ github.sha }}
+          docker push ${{ env.IMAGE }}:latest
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image ${{ env.IMAGE }}:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.GCP_PROJECT }} \
+            --platform managed \
+            --service-account ${{ env.SERVICE_ACCOUNT }} \
+            --memory 256Mi \
+            --cpu 1 \
+            --min-instances 0 \
+            --max-instances 2 \
+            --set-env-vars OPENFIRE_SOCAL_GCS_BUCKET=openfire,OPENFIRE_SOCAL_GCS_PREFIX=predictions \
+            --allow-unauthenticated \
+            --quiet
+
+      - name: Print service URL
+        run: |
+          gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.GCP_PROJECT }} \
+            --format 'value(status.url)'
