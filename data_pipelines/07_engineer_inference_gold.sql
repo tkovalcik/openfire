@@ -16,6 +16,13 @@ MERGE `msds603-mlops-project.openfire_features.gold_features_inference` AS dst
 USING (
   WITH ParsedSilver AS (
     SELECT
+      -- Normalize coordinate keys to 6 decimals before dedup / lag windows.
+      -- Some extraction runs preserve low-order FLOAT64 jitter differently
+      -- even when the visible cell centroid is the same. Partitioning on
+      -- CAST(latitude AS STRING) splits one logical cell into multiple lag
+      -- histories and drops 60d features for the affected windows.
+      FORMAT("%.6f", s.latitude)  AS lat_key,
+      FORMAT("%.6f", s.longitude) AS lon_key,
       -- Explicit column list avoids SELECT * ambiguity: both silver and
       -- fire_history_by_cell carry `geo` and `system:index`, so a wildcard
       -- JOIN would make those names ambiguous on a wildcard table.
@@ -39,7 +46,7 @@ USING (
     SELECT *
     FROM ParsedSilver
     QUALIFY ROW_NUMBER() OVER (
-      PARTITION BY CAST(latitude AS STRING), CAST(longitude AS STRING), window_start_date
+      PARTITION BY lat_key, lon_key, window_start_date
       ORDER BY mean_NDVI
     ) = 1
   ),
@@ -86,7 +93,7 @@ USING (
       gridmet_precip_sum - LAG(gridmet_precip_sum, 12) OVER w AS precip_change_60d
     FROM TargetEngineering
     WINDOW w AS (
-      PARTITION BY CAST(latitude AS STRING), CAST(longitude AS STRING)
+      PARTITION BY lat_key, lon_key
       ORDER BY window_start_date
     )
   )
