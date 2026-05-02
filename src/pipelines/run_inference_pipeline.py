@@ -68,6 +68,7 @@ LOGGER = logging.getLogger(__name__)
 PROJECT = "msds603-mlops-project"
 DATASET = "openfire_features"
 PREDICTIONS_TABLE = f"{PROJECT}.{DATASET}.predictions_history"
+EXPECTED_INFERENCE_CELL_COUNT = 65_687
 
 
 # ── mode resolution ──────────────────────────────────────────────────────────
@@ -211,9 +212,20 @@ def _step_predict(ctx: WindowContext) -> None:
     )
     features: pd.DataFrame = ctx.bq_client.query(sql, job_config=job_config).to_dataframe()
     LOGGER.info("  read %s gold feature rows for window %s", f"{len(features):,}", ctx.window.isoformat())
+    assert_inference_cell_count(len(features), window=ctx.window, source="gold_features_inference")
 
     ctx.predictions = predict_window(features, loaded_model=ctx.loaded_model)
     ctx.rows_predicted = len(ctx.predictions)
+    assert_inference_cell_count(ctx.rows_predicted, window=ctx.window, source="predictions")
+
+
+def assert_inference_cell_count(actual: int, *, window: date, source: str) -> None:
+    """Guard the canonical SoCal inference grid size before writes happen."""
+    if actual != EXPECTED_INFERENCE_CELL_COUNT:
+        raise RuntimeError(
+            f"{source} row-count invariant failed for window {window.isoformat()}: "
+            f"expected {EXPECTED_INFERENCE_CELL_COUNT:,}, got {actual:,}."
+        )
 
 
 def _step_write_outputs(ctx: WindowContext) -> None:
