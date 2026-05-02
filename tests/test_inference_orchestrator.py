@@ -20,10 +20,12 @@ import pytest
 
 from pipelines.date_grid import EPOCH_START, STEP_DAYS, previous_grid_date
 from pipelines.run_inference_pipeline import (
+    EXPECTED_INFERENCE_CELL_COUNT,
     WindowContext,
     WindowOutcome,
     _step_append_silver,
     _step_engineer_gold,
+    assert_inference_cell_count,
     build_arg_parser,
     process_window,
     resolve_windows_backfill,
@@ -246,6 +248,23 @@ def test_append_silver_step_requires_bq_client() -> None:
     )
     with pytest.raises(RuntimeError, match="requires a BigQuery client"):
         _step_append_silver(ctx)
+
+
+def test_inference_cell_count_guard_accepts_canonical_grid_size() -> None:
+    assert_inference_cell_count(
+        EXPECTED_INFERENCE_CELL_COUNT,
+        window=date(2026, 4, 17),
+        source="gold_features_inference",
+    )
+
+
+def test_inference_cell_count_guard_rejects_row_count_drift() -> None:
+    with pytest.raises(RuntimeError, match=r"expected 65,687, got 65,686"):
+        assert_inference_cell_count(
+            EXPECTED_INFERENCE_CELL_COUNT - 1,
+            window=date(2026, 4, 17),
+            source="gold_features_inference",
+        )
 
 
 def test_process_window_skips_remaining_steps_when_skip_reason_set(monkeypatch) -> None:
