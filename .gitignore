@@ -8,6 +8,7 @@ artifacts/
 mlruns/
 .DS_Store
 data/
+config/
 
 # Local session files — not for the shared repo
 CLAUDE.md

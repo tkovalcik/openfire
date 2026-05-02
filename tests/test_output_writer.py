@@ -311,7 +311,7 @@ def test_predictions_history_ddl_in_create_file() -> None:
     sql = (REPO_ROOT / "data_pipelines" / "07_create_inference_tables.sql").read_text()
     assert "CREATE TABLE IF NOT EXISTS `msds603-mlops-project.openfire_features.predictions_history`" in sql
     assert "PARTITION BY window_start_date" in sql
-    # BQ cannot CLUSTER BY FLOAT64; lat_bin/lon_bin (INT64, 0.1° bins) are used instead.
+    # BQ cannot CLUSTER BY FLOAT64; lat_bin/lon_bin (INT64, 0.1 degree bins) are used instead.
     assert "CLUSTER BY lat_bin, lon_bin" in sql
     assert "lat_bin" in sql and "lon_bin" in sql
     # No destructive verbs should have crept into the DDL file.
