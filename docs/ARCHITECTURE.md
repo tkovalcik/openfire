@@ -148,7 +148,7 @@ Static Leaflet map deployed as Cloud Run service `openfire-ui-socal`. A tiny Fas
 | BigQuery dataset `openfire_features` | All tables | Project configured by deployment environment |
 | GCS bucket `openfire` | Parquet shards, GeoJSON snapshots, manifest, MLflow artifacts | `gs://openfire/` |
 
-**SoCal UI runtime IAM:** the dedicated runtime service account has read-only object access to the prediction artifacts. The deployed UI reads `manifest.json`, `predictions_*.geojson`, and `aoi_counties.geojson` through the `/data/*` proxy.
+**SoCal UI runtime IAM:** the dedicated runtime service account has read-only object access to the prediction artifacts. The deployed UI reads `manifest.json`, `predictions_*.geojson`, and `aoi_counties.geojson` through the `/data/*` proxy. The GitHub deployer service account also needs `roles/iam.serviceAccountUser` on the SoCal UI runtime service account; otherwise `ui_socal.yml` can authenticate, build, and push the image, but `gcloud run deploy --service-account ...` fails with `iam.serviceaccounts.actAs` denied.
 
 **Scheduler SA note:** `openfire-scheduler` has `roles/run.invoker` scoped to the `openfire-inference` job. The Cloud Run Job's default args are baked to `--mode latest`. Do **not** add an `overrides` block to the Scheduler HTTP body without also granting `run.jobs.runWithOverrides` — `roles/run.invoker` does not include it.
 
