@@ -17,6 +17,8 @@ env:
   SERVICE_NAME: openfire-ui-socal
   IMAGE: us-central1-docker.pkg.dev/msds603-mlops-project/openfire/ui-socal
   SERVICE_ACCOUNT: openfire-ui-socal-runner@msds603-mlops-project.iam.gserviceaccount.com
+  GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+  GCP_DEPLOYER_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
 
 jobs:
   deploy:
@@ -28,11 +30,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          required_vars=(
+            GCP_WORKLOAD_IDENTITY_PROVIDER
+            GCP_DEPLOYER_SERVICE_ACCOUNT
+          )
+
+          for name in "${required_vars[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required repository variable: ${name}"
+              exit 1
+            fi
+          done
+
       - id: auth
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOYER_SERVICE_ACCOUNT }}
 
       - uses: google-github-actions/setup-gcloud@v2
 
