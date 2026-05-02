@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import gzip
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -60,6 +61,8 @@ def test_socal_ui_has_live_manifest_and_timeline_controls() -> None:
     assert "config.snapshotCacheSize" in app
     assert "lowZoomPerformance" in config
     assert "selectDisplayFeatures" in app
+    assert "geojson_variants" in app
+    assert "variantKey" in config
     assert "renderActiveSnapshot" in app
 
 
@@ -99,6 +102,38 @@ def test_socal_ui_data_proxy_reads_private_gcs(monkeypatch) -> None:
     response = client.get("/data/manifest.json")
 
     assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_socal_ui_data_proxy_preserves_gzip_encoding(monkeypatch) -> None:
+    class FakeBlob:
+        content_type = "application/geo+json"
+        content_encoding = "gzip"
+
+        def exists(self) -> bool:
+            return True
+
+        def download_as_bytes(self, *, raw_download: bool = False) -> bytes:
+            assert raw_download is True
+            return gzip.compress(b'{"ok": true}')
+
+    class FakeBucket:
+        def blob(self, name: str) -> FakeBlob:
+            assert name == "predictions/predictions_20260427_z8.geojson"
+            return FakeBlob()
+
+    class FakeClient:
+        def bucket(self, name: str) -> FakeBucket:
+            assert name == "openfire"
+            return FakeBucket()
+
+    monkeypatch.setattr(ui_app, "_storage_client", FakeClient())
+    client = TestClient(ui_app.app)
+
+    response = client.get("/data/predictions_20260427_z8.geojson")
+
+    assert response.status_code == 200
+    assert response.headers["content-encoding"] == "gzip"
     assert response.json() == {"ok": True}
 
 

@@ -60,9 +60,15 @@ def data_proxy(object_name: str):
     if not blob.exists():
         raise HTTPException(status_code=404)
 
-    payload = blob.download_as_bytes()
+    content_encoding = getattr(blob, "content_encoding", None)
+    try:
+        payload = blob.download_as_bytes(raw_download=bool(content_encoding))
+    except TypeError:  # test doubles and older clients may not accept raw_download
+        payload = blob.download_as_bytes()
     content_type = blob.content_type or mimetypes.guess_type(object_name)[0] or "application/octet-stream"
     headers = {"Cache-Control": "public, max-age=300"}
+    if content_encoding:
+        headers["Content-Encoding"] = content_encoding
     return Response(content=payload, media_type=content_type, headers=headers)
 
 
