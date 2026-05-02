@@ -10,8 +10,8 @@
     lowZoomPerformance: {
       enabled: true,
       tiers: [
-        { maxZoom: 8, sampleStride: 6, sampleOffset: 2 },
-        { maxZoom: 9, sampleStride: 3, sampleOffset: 1 },
+        { maxZoom: 8, sampleStride: 6, sampleOffset: 2, variantKey: "low" },
+        { maxZoom: 9, sampleStride: 3, sampleOffset: 1, variantKey: "medium" },
       ],
     },
     map: {

@@ -12,6 +12,7 @@ Mocked-client tests covering the three sinks:
 from __future__ import annotations
 
 import json
+import gzip
 from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -24,11 +25,13 @@ from pipelines.output_writer import (
     MANIFEST_FILENAME,
     PREDICTION_COLUMNS,
     PREDICTIONS_TABLE,
+    SNAPSHOT_VARIANT_SPECS,
     build_geojson_payload,
     manifest_uri,
     snapshot_uri,
     update_manifest,
     write_geojson_snapshot,
+    write_geojson_snapshot_variants,
     write_predictions_to_bq,
 )
 
@@ -161,8 +164,32 @@ def test_geojson_properties_include_required_fields() -> None:
     assert props["window_start_date"] == "2025-01-02"
 
 
+def test_geojson_downsample_is_spatially_ordered_and_deterministic() -> None:
+    df = pd.DataFrame({
+        "latitude": [1.0, 3.0, 2.0, 3.0, 1.0, 2.0],
+        "longitude": [-120.0, -122.0, -121.0, -121.0, -119.0, -120.0],
+        "window_start_date": [date(2025, 1, 2)] * 6,
+        "risk_probability": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+        "predicted_label": [0, 0, 0, 1, 1, 1],
+        "model_name": ["openfire-gold"] * 6,
+        "model_version": ["7"] * 6,
+        "inference_run_at": [datetime(2026, 4, 28, tzinfo=timezone.utc)] * 6,
+    })
+
+    payload = build_geojson_payload(df, sample_stride=3, sample_offset=1)
+
+    assert [feature["geometry"]["coordinates"] for feature in payload["features"]] == [
+        [-121.0, 3.0],
+        [-120.0, 1.0],
+    ]
+
+
 def test_snapshot_uri_format() -> None:
     assert snapshot_uri(date(2025, 1, 2)) == "gs://openfire/predictions/predictions_20250102.geojson"
+    assert (
+        snapshot_uri(date(2025, 1, 2), variant_suffix="z8")
+        == "gs://openfire/predictions/predictions_20250102_z8.geojson"
+    )
 
 
 def test_write_geojson_snapshot_uploads_once_to_correct_uri(tmp_path: Path) -> None:
@@ -179,9 +206,45 @@ def test_write_geojson_snapshot_uploads_once_to_correct_uri(tmp_path: Path) -> N
     assert written_path.exists()
 
     # Round-trip the JSON to confirm it's valid + has expected shape.
-    data = json.loads(written_path.read_text())
+    data = json.loads(gzip.decompress(written_path.read_bytes()).decode("utf-8"))
     assert data["type"] == "FeatureCollection"
     assert len(data["features"]) == 2
+
+
+def test_write_geojson_snapshot_can_write_plain_json(tmp_path: Path) -> None:
+    storage = _local_storage(tmp_path)
+    prefix = f"local://{tmp_path}/predictions"
+
+    written_uri = write_geojson_snapshot(
+        _sample_predictions(2),
+        target_date=date(2025, 1, 2),
+        storage=storage,
+        gcs_prefix=prefix,
+        gzip_output=False,
+    )
+
+    data = json.loads(Path(written_uri.removeprefix("local://")).read_text())
+    assert len(data["features"]) == 2
+
+
+def test_write_geojson_snapshot_variants_writes_downsampled_files(tmp_path: Path) -> None:
+    storage = _local_storage(tmp_path)
+    prefix = f"local://{tmp_path}/predictions"
+
+    variants = write_geojson_snapshot_variants(
+        _sample_predictions(12),
+        target_date=date(2025, 1, 2),
+        storage=storage,
+        gcs_prefix=prefix,
+    )
+
+    assert set(variants) == set(SNAPSHOT_VARIANT_SPECS)
+    assert variants["low"]["feature_count"] == 2
+    assert variants["medium"]["feature_count"] == 4
+    for metadata in variants.values():
+        path = Path(metadata["geojson_uri"].removeprefix("local://"))
+        payload = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+        assert len(payload["features"]) == metadata["feature_count"]
 
 
 # ── manifest ─────────────────────────────────────────────────────────────────
@@ -215,6 +278,34 @@ def test_update_manifest_writes_required_schema(tmp_path: Path) -> None:
             "updated_at": "2026-04-28T12:00:00+00:00",
         }
     ]
+
+
+def test_update_manifest_writes_snapshot_variants(tmp_path: Path) -> None:
+    storage = _local_storage(tmp_path)
+    prefix = f"local://{tmp_path}/predictions"
+    variants = {
+        "low": {
+            "geojson_uri": "gs://openfire/predictions/predictions_20260423_z8.geojson",
+            "feature_count": 10948,
+            "max_zoom": 8,
+            "sample_stride": 6,
+            "sample_offset": 2,
+        }
+    }
+
+    written_uri = update_manifest(
+        latest_window_start_date=date(2026, 4, 23),
+        latest_geojson_uri="gs://openfire/predictions/predictions_20260423.geojson",
+        latest_geojson_variants=variants,
+        model_version="7",
+        updated_at=datetime(2026, 4, 28, 12, 0, tzinfo=timezone.utc),
+        storage=storage,
+        gcs_prefix=prefix,
+    )
+
+    payload = json.loads(Path(written_uri.removeprefix("local://")).read_text())
+    assert payload["latest_geojson_variants"] == variants
+    assert payload["windows"][0]["geojson_variants"] == variants
 
 
 def test_update_manifest_does_not_regress_to_older_window(tmp_path: Path) -> None:

@@ -233,16 +233,27 @@ def _step_write_outputs(ctx: WindowContext) -> None:
 
     from src.common.storage import StorageClient
 
-    from .output_writer import update_manifest, write_geojson_snapshot, write_predictions_to_bq
+    from .output_writer import (
+        update_manifest,
+        write_geojson_snapshot,
+        write_geojson_snapshot_variants,
+        write_predictions_to_bq,
+    )
 
     run_at = datetime.now(timezone.utc)
     storage = StorageClient(gcp_project_id=PROJECT)
 
     write_predictions_to_bq(ctx.bq_client, ctx.predictions, target_date=ctx.window)
     geojson_uri = write_geojson_snapshot(ctx.predictions, target_date=ctx.window, storage=storage)
+    geojson_variants = write_geojson_snapshot_variants(
+        ctx.predictions,
+        target_date=ctx.window,
+        storage=storage,
+    )
     update_manifest(
         latest_window_start_date=ctx.window,
         latest_geojson_uri=geojson_uri,
+        latest_geojson_variants=geojson_variants,
         model_version=ctx.loaded_model.model_version,
         updated_at=run_at,
         storage=storage,
