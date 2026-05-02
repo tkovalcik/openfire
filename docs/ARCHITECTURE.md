@@ -37,11 +37,11 @@ flowchart TD
     subgraph Outputs["Outputs"]
         bq_pred["BigQuery\npredictions_history\n(partition by window_start_date)"]
         geojson["GCS GeoJSON snapshots\npredictions_YYYYMMDD.geojson"]
-        manifest["GCS manifest.json\nfrontier pointer"]
+        manifest["GCS manifest.json\nfrontier + window index"]
     end
 
-    subgraph Frontend["Frontend  (static/index.html)"]
-        ui["Leaflet map\ndate slider"]
+    subgraph Frontend["Frontend  (frontend-socal/)"]
+        ui["Cloud Run SoCal viewer\nLeaflet map + time slider"]
     end
 
     subgraph Scheduler["Automation"]
@@ -66,7 +66,7 @@ flowchart TD
     out --> bq_pred
     out --> geojson
     out --> manifest
-    manifest -->|"fetch latest GeoJSON URI"| ui
+    manifest -->|"fetch manifest.windows"| ui
     geojson -->|"fetch FeatureCollection"| ui
 ```
 
@@ -127,11 +127,11 @@ Three idempotent sinks per window:
 
 1. **`predictions_history` (BigQuery)** — partition-scoped `WRITE_TRUNCATE` on `window_start_date`. Re-running the same window replaces only that window's rows; other partitions are untouched.
 2. **GeoJSON snapshot (GCS)** — `gs://openfire/predictions/predictions_YYYYMMDD.geojson`. FeatureCollection with `risk_probability`, `predicted_label`, `window_start_date`, `model_version` per point. Coordinate precision capped at 5 decimal places.
-3. **`manifest.json` (GCS)** — pointer to the latest snapshot plus a sorted `windows` index for the UI slider. **Monotonic:** `update_manifest` reads the existing manifest and refuses to regress the `latest_window_start_date` pointer. A re-run on an older window (e.g., a manual single-window rerun after a backfill) logs a structured WARNING and preserves the frontier while still upserting that older window in `windows`. Same-window re-runs always write through so `model_version`/`updated_at` refresh after a model promotion.
+3. **`manifest.json` (GCS)** — pointer to the latest snapshot plus a sorted `windows` index for the UI slider. **Monotonic:** `update_manifest` reads the existing manifest and refuses to regress the `latest_window_start_date` pointer. A re-run on an older window (e.g., a manual single-window rerun after a backfill) logs a structured WARNING and preserves the frontier while still upserting that older window in `windows`. Same-window re-runs always write through so `model_version`/`updated_at` refresh after a model promotion. Old pointer-only manifests are migrated by the next update; `scripts/rebuild_manifest_from_bucket.py` can rebuild the index from existing `predictions_*.geojson` snapshots.
 
 ### Frontend (`frontend-socal/index.html`)
 
-Static Leaflet map deployed as Cloud Run service `openfire-ui-socal`. A tiny FastAPI service serves the static files and proxies `/data/*` to private `gs://openfire/predictions/*` objects using the Cloud Run service account, so the browser stays on one origin and no GCS CORS/public-read setting is needed. On load: fetches `manifest.json`, builds the slider from `manifest.windows`, fetches the selected GeoJSON, and renders risk probability. The UI supports range scrubbing, play/pause, arrow-key navigation, and a small in-memory snapshot cache.
+Static Leaflet map deployed as Cloud Run service `openfire-ui-socal`. A tiny FastAPI service serves the static files and proxies `/data/*` to private `gs://openfire/predictions/*` objects using the Cloud Run service account, so the browser stays on one origin and no GCS CORS/public-read setting is needed. On load: fetches `manifest.json`, builds the slider from `manifest.windows`, fetches the selected GeoJSON, and renders risk probability. The UI supports range scrubbing, play/pause, arrow-key navigation, a small in-memory snapshot cache, and neighbor prefetch. The checked-in demo manifest remains for local static development.
 
 ---
 
@@ -142,11 +142,13 @@ Static Leaflet map deployed as Cloud Run service `openfire-ui-socal`. A tiny Fas
 | Cloud Run Job `openfire-inference` | Runs the inference orchestrator | 4 vCPU / 16 GiB, `max-retries=0`, `parallelism=1` |
 | Cloud Run Job `openfire-train` | Runs training | 8 vCPU / 32 GiB, `max-retries=0` |
 | Cloud Run Service `openfire-api` | FastAPI serving (Sebastian's infrastructure) | Managed by `cd.yml` |
-| Cloud Run Service `openfire-ui-socal` | Static SoCal AOI viewer + authenticated GCS proxy | 1 vCPU / 256 MiB, `min-instances=0`, managed by `ui_socal.yml` |
+| Cloud Run Service `openfire-ui-socal` | Static SoCal AOI viewer + authenticated GCS proxy | 1 vCPU / 256 MiB, `min-instances=0`, dedicated runtime SA, managed by `ui_socal.yml` |
 | Cloud Scheduler `openfire-inference-daily` | Triggers inference | `0 8 * * *` UTC, `--mode latest` |
-| MLflow server | Experiment tracking + model registry | Compute Engine `e2-small`, SQLite backend, `http://34.58.62.126:5000` |
-| BigQuery dataset `openfire_features` | All tables | `msds603-mlops-project` |
+| MLflow server | Experiment tracking + model registry | Compute Engine `e2-small`, SQLite backend, endpoint kept in deployment config |
+| BigQuery dataset `openfire_features` | All tables | Project configured by deployment environment |
 | GCS bucket `openfire` | Parquet shards, GeoJSON snapshots, manifest, MLflow artifacts | `gs://openfire/` |
+
+**SoCal UI runtime IAM:** the dedicated runtime service account has read-only object access to the prediction artifacts. The deployed UI reads `manifest.json`, `predictions_*.geojson`, and `aoi_counties.geojson` through the `/data/*` proxy.
 
 **Scheduler SA note:** `openfire-scheduler` has `roles/run.invoker` scoped to the `openfire-inference` job. The Cloud Run Job's default args are baked to `--mode latest`. Do **not** add an `overrides` block to the Scheduler HTTP body without also granting `run.jobs.runWithOverrides` — `roles/run.invoker` does not include it.
 
