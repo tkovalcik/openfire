@@ -101,7 +101,10 @@ def test_write_predictions_load_payload_has_only_canonical_columns() -> None:
     write_predictions_to_bq(client, df, target_date=date(2025, 1, 2))
 
     payload = client.load_table_from_dataframe.call_args.args[0]
-    assert list(payload.columns) == PREDICTION_COLUMNS
+    # payload = PREDICTION_COLUMNS + lat_bin + lon_bin (computed at write time)
+    assert list(payload.columns) == PREDICTION_COLUMNS + ["lat_bin", "lon_bin"]
+    assert payload["lat_bin"].dtype == "int64"
+    assert payload["lon_bin"].dtype == "int64"
 
 
 def test_write_predictions_rejects_wrong_window_rows() -> None:
@@ -308,9 +311,9 @@ def test_predictions_history_ddl_in_create_file() -> None:
     sql = (REPO_ROOT / "data_pipelines" / "07_create_inference_tables.sql").read_text()
     assert "CREATE TABLE IF NOT EXISTS `msds603-mlops-project.openfire_features.predictions_history`" in sql
     assert "PARTITION BY window_start_date" in sql
-    # BQ rejects CLUSTER BY on FLOAT64 columns (lat/lon); table is partitioned
-    # by date only — no cluster key.
-    assert "CLUSTER BY latitude, longitude" not in sql
+    # BQ cannot CLUSTER BY FLOAT64; lat_bin/lon_bin (INT64, 0.1 degree bins) are used instead.
+    assert "CLUSTER BY lat_bin, lon_bin" in sql
+    assert "lat_bin" in sql and "lon_bin" in sql
     # No destructive verbs should have crept into the DDL file.
     upper = sql.upper()
     for forbidden in ("DROP TABLE", "DELETE FROM", "TRUNCATE TABLE", "CREATE OR REPLACE TABLE"):
