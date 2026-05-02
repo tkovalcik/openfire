@@ -31,11 +31,15 @@ const nodes = {
 const state = {
   manifest: null,
   aoi: null,
+  activeSnapshot: null,
   riskLayer: null,
+  renderSignature: "",
+  renderedFeatureCount: 0,
   windows: [],
   activeIndex: 0,
   cache: new Map(),
   playbackTimer: null,
+  playbackLoading: false,
 };
 
 function setStatus(message, isError = false) {
@@ -151,6 +155,61 @@ function tooltipHtml(feature) {
   `;
 }
 
+function activeLowZoomTier() {
+  const settings = config.lowZoomPerformance || {};
+  if (!settings.enabled) {
+    return null;
+  }
+
+  const zoom = map.getZoom();
+  const tiers = Array.isArray(settings.tiers) && settings.tiers.length
+    ? settings.tiers
+    : [settings];
+  return tiers
+    .filter((tier) => zoom <= (tier.maxZoom || 7))
+    .sort((a, b) => (a.maxZoom || 7) - (b.maxZoom || 7))[0] || null;
+}
+
+function featureSortKey(feature, fallbackIndex) {
+  const coordinates = feature.geometry?.coordinates || [];
+  const longitude = Number(coordinates[0]);
+  const latitude = Number(coordinates[1]);
+  return {
+    latitude: Number.isFinite(latitude) ? latitude : Number.NEGATIVE_INFINITY,
+    longitude: Number.isFinite(longitude) ? longitude : Number.POSITIVE_INFINITY,
+    fallbackIndex,
+  };
+}
+
+function selectDisplayFeatures(features) {
+  const tier = activeLowZoomTier();
+  const sampleStride = Math.max(1, Number(tier?.sampleStride) || 1);
+  if (!tier || sampleStride === 1) {
+    return {
+      features,
+      mode: "full",
+    };
+  }
+
+  const sampleOffset = Math.min(
+    sampleStride - 1,
+    Math.max(0, Number(tier.sampleOffset ?? Math.floor(sampleStride / 2)))
+  );
+  const orderedFeatures = features
+    .map((feature, index) => ({ feature, sortKey: featureSortKey(feature, index) }))
+    .sort((a, b) => (
+      b.sortKey.latitude - a.sortKey.latitude ||
+      a.sortKey.longitude - b.sortKey.longitude ||
+      a.sortKey.fallbackIndex - b.sortKey.fallbackIndex
+    ))
+    .map((item) => item.feature);
+
+  return {
+    features: orderedFeatures.filter((_, index) => index % sampleStride === sampleOffset),
+    mode: `low-sampled-${sampleStride}-${sampleOffset}`,
+  };
+}
+
 function renderAoi(aoi) {
   const boundaryLayer = L.geoJSON(aoi, {
     style: {
@@ -184,19 +243,25 @@ function renderAoi(aoi) {
   return boundaryLayer;
 }
 
-function buildRiskLayer(riskGeojson) {
-  return L.geoJSON(riskGeojson, {
-    pointToLayer(feature, latlng) {
-      return L.circleMarker(latlng, pointStyle(feature));
+function buildRiskLayer(features) {
+  return L.geoJSON(
+    {
+      type: "FeatureCollection",
+      features,
     },
-    onEachFeature(feature, layer) {
-      layer.bindTooltip(tooltipHtml(feature), {
-        direction: "top",
-        sticky: true,
-        className: "risk-tooltip",
-      });
-    },
-  });
+    {
+      pointToLayer(feature, latlng) {
+        return L.circleMarker(latlng, pointStyle(feature));
+      },
+      onEachFeature(feature, layer) {
+        layer.bindTooltip(tooltipHtml(feature), {
+          direction: "top",
+          sticky: true,
+          className: "risk-tooltip",
+        });
+      },
+    }
+  );
 }
 
 function setLayerOpacity(layer, opacity) {
@@ -207,9 +272,9 @@ function setLayerOpacity(layer, opacity) {
   });
 }
 
-function replaceRiskLayer(riskGeojson) {
+function replaceRiskLayer(features) {
   const previous = state.riskLayer;
-  const next = buildRiskLayer(riskGeojson);
+  const next = buildRiskLayer(features);
   setLayerOpacity(next, 0.15);
   next.addTo(map);
   state.riskLayer = next;
@@ -219,6 +284,23 @@ function replaceRiskLayer(riskGeojson) {
     setLayerOpacity(previous, 0.1);
     window.setTimeout(() => map.removeLayer(previous), 150);
   }
+}
+
+function renderActiveSnapshot({ force = false } = {}) {
+  const features = state.activeSnapshot?.features || [];
+  if (!features.length) {
+    return;
+  }
+
+  const display = selectDisplayFeatures(features);
+  const signature = `${display.mode}:${display.features.length}`;
+  if (!force && signature === state.renderSignature) {
+    return;
+  }
+
+  state.renderSignature = signature;
+  state.renderedFeatureCount = display.features.length;
+  replaceRiskLayer(display.features);
 }
 
 function normalizeWindows(manifest) {
@@ -265,11 +347,9 @@ async function loadSnapshot(windowEntry) {
   return payload;
 }
 
-function prefetchNeighbors(index) {
-  if (state.playbackTimer) {
-    return;
-  }
-  [index - 1, index + 1].forEach((candidate) => {
+function prefetchSnapshots(index, offsets = [-1, 1]) {
+  offsets.forEach((offset) => {
+    const candidate = index + offset;
     if (candidate < 0 || candidate >= state.windows.length) {
       return;
     }
@@ -285,11 +365,13 @@ function updateMetadata(manifest, aoi, riskGeojson, windowEntry) {
   const riskCount = riskGeojson.features?.filter(
     (feature) => Number(feature.properties?.risk_probability ?? 0) >= 0.5
   ).length || 0;
+  const renderedCount = state.renderedFeatureCount || featureCount;
+  const renderedSuffix = renderedCount < featureCount ? `, ${renderedCount.toLocaleString()} rendered` : "";
 
   nodes.statusMeta.textContent = manifest.status || "live";
   nodes.windowDate.textContent = windowEntry.window_start_date || manifest.latest_window_start_date || "Unavailable";
   nodes.modelVersion.textContent = windowEntry.model_version || manifest.model_version || "Unavailable";
-  nodes.featureCount.textContent = `${featureCount.toLocaleString()} (${riskCount.toLocaleString()} elevated)`;
+  nodes.featureCount.textContent = `${featureCount.toLocaleString()} (${riskCount.toLocaleString()} elevated${renderedSuffix})`;
   nodes.countyCount.textContent = `${aoi.features?.length || 0}`;
   nodes.source.textContent = manifest.source || "GCS prediction manifest";
 }
@@ -337,11 +419,17 @@ async function setActiveIndex(index, { prefetch = true } = {}) {
   setStatus(`Loading ${windowEntry.window_start_date} snapshot...`);
   try {
     const riskGeojson = await loadSnapshot(windowEntry);
-    replaceRiskLayer(riskGeojson);
+    state.activeSnapshot = riskGeojson;
+    state.renderSignature = "";
+    renderActiveSnapshot({ force: true });
     updateMetadata(state.manifest, state.aoi, riskGeojson, windowEntry);
-    setStatus(`Loaded ${riskGeojson.features.length.toLocaleString()} risk features.`);
+    const renderedCount = state.renderedFeatureCount || riskGeojson.features.length;
+    const renderedSuffix = renderedCount < riskGeojson.features.length
+      ? ` Rendering ${renderedCount.toLocaleString()} at this zoom.`
+      : "";
+    setStatus(`Loaded ${riskGeojson.features.length.toLocaleString()} risk features.${renderedSuffix}`);
     if (prefetch) {
-      prefetchNeighbors(boundedIndex);
+      prefetchSnapshots(boundedIndex);
     }
   } catch (error) {
     stopPlayback();
@@ -355,8 +443,23 @@ function stopPlayback() {
     window.clearInterval(state.playbackTimer);
     state.playbackTimer = null;
   }
+  state.playbackLoading = false;
   nodes.playbackToggle.textContent = "Play";
   nodes.playbackToggle.setAttribute("aria-label", "Play timeline");
+}
+
+async function advancePlayback() {
+  if (state.playbackLoading) {
+    return;
+  }
+  state.playbackLoading = true;
+  try {
+    const nextIndex = (state.activeIndex + 1) % state.windows.length;
+    await setActiveIndex(nextIndex, { prefetch: false });
+    prefetchSnapshots(nextIndex, [1, 2]);
+  } finally {
+    state.playbackLoading = false;
+  }
 }
 
 function startPlayback() {
@@ -365,14 +468,9 @@ function startPlayback() {
   }
   nodes.playbackToggle.textContent = "Pause";
   nodes.playbackToggle.setAttribute("aria-label", "Pause timeline");
-  state.playbackTimer = window.setInterval(() => {
-    const nextIndex = (state.activeIndex + 1) % state.windows.length;
-    const nextUrl = resolveAssetUrl(state.windows[nextIndex].geojson_uri);
-    if (!state.cache.has(nextUrl)) {
-      return;
-    }
-    setActiveIndex(nextIndex, { prefetch: false });
-  }, config.playbackIntervalMs || 750);
+  prefetchSnapshots(state.activeIndex, [1, 2]);
+  advancePlayback();
+  state.playbackTimer = window.setInterval(advancePlayback, config.playbackIntervalMs || 750);
 }
 
 function togglePlayback() {
@@ -402,6 +500,18 @@ function bindControls() {
     } else if (event.key === " ") {
       event.preventDefault();
       togglePlayback();
+    }
+  });
+  map.on("zoomend", () => {
+    const previousCount = state.renderedFeatureCount;
+    renderActiveSnapshot();
+    if (state.activeSnapshot && previousCount !== state.renderedFeatureCount) {
+      updateMetadata(
+        state.manifest,
+        state.aoi,
+        state.activeSnapshot,
+        state.windows[state.activeIndex]
+      );
     }
   });
 }

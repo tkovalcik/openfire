@@ -58,6 +58,9 @@ def test_socal_ui_has_live_manifest_and_timeline_controls() -> None:
     assert 'id="playback-toggle"' in html
     assert "gs://openfire/predictions/" in app
     assert "config.snapshotCacheSize" in app
+    assert "lowZoomPerformance" in config
+    assert "selectDisplayFeatures" in app
+    assert "renderActiveSnapshot" in app
 
 
 def test_socal_ui_service_serves_static_files(monkeypatch) -> None:
