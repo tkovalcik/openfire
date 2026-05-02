@@ -28,6 +28,7 @@ idempotently re-writes the BQ partition and re-attempts the snapshot).
 """
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 from datetime import date
@@ -53,6 +54,20 @@ DEFAULT_GCS_PREFIX = "gs://openfire/predictions"
 MANIFEST_FILENAME = "manifest.json"
 DEFAULT_COORD_DECIMALS = 5
 DEFAULT_PROB_DECIMALS = 5
+SNAPSHOT_VARIANT_SPECS = {
+    "low": {
+        "suffix": "z8",
+        "max_zoom": 8,
+        "sample_stride": 6,
+        "sample_offset": 2,
+    },
+    "medium": {
+        "suffix": "z9",
+        "max_zoom": 9,
+        "sample_stride": 3,
+        "sample_offset": 1,
+    },
+}
 
 PREDICTION_COLUMNS = [
     "latitude", "longitude", "window_start_date",
@@ -134,8 +149,17 @@ def build_geojson_payload(
     *,
     coord_decimals: int = DEFAULT_COORD_DECIMALS,
     prob_decimals: int = DEFAULT_PROB_DECIMALS,
+    sample_stride: int = 1,
+    sample_offset: int = 0,
 ) -> dict[str, Any]:
     """Pure function: turn a predictions DataFrame into a GeoJSON dict."""
+    if sample_stride > 1:
+        predictions = _spatially_sample_predictions(
+            predictions,
+            sample_stride=sample_stride,
+            sample_offset=sample_offset,
+        )
+
     features = []
     for row in predictions.itertuples(index=False):
         features.append({
@@ -161,12 +185,55 @@ def build_geojson_payload(
     return {"type": "FeatureCollection", "features": features}
 
 
-def snapshot_uri(target_date: date, *, gcs_prefix: str = DEFAULT_GCS_PREFIX) -> str:
-    return f"{gcs_prefix.rstrip('/')}/predictions_{target_date.strftime('%Y%m%d')}.geojson"
+def _spatially_sample_predictions(
+    predictions: pd.DataFrame,
+    *,
+    sample_stride: int,
+    sample_offset: int,
+) -> pd.DataFrame:
+    """Return a deterministic lat/lon-ordered sample matching the SoCal UI tiers."""
+    if sample_stride <= 1:
+        return predictions
+    offset = max(0, min(sample_stride - 1, sample_offset))
+    ordered = predictions.sort_values(
+        by=["latitude", "longitude"],
+        ascending=[False, True],
+        kind="mergesort",
+    )
+    return ordered.iloc[offset::sample_stride]
+
+
+def snapshot_uri(
+    target_date: date,
+    *,
+    gcs_prefix: str = DEFAULT_GCS_PREFIX,
+    variant_suffix: str | None = None,
+) -> str:
+    suffix = f"_{variant_suffix}" if variant_suffix else ""
+    return f"{gcs_prefix.rstrip('/')}/predictions_{target_date.strftime('%Y%m%d')}{suffix}.geojson"
 
 
 def manifest_uri(*, gcs_prefix: str = DEFAULT_GCS_PREFIX) -> str:
     return f"{gcs_prefix.rstrip('/')}/{MANIFEST_FILENAME}"
+
+
+def _write_geojson_payload(
+    uri: str,
+    payload: dict[str, Any],
+    *,
+    storage: StorageClient,
+    gzip_output: bool,
+) -> None:
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    if gzip_output:
+        storage.write_bytes(
+            uri,
+            gzip.compress(body),
+            content_type="application/geo+json",
+            content_encoding="gzip",
+        )
+        return
+    storage.write_bytes(uri, body, content_type="application/geo+json")
 
 
 def write_geojson_snapshot(
@@ -176,16 +243,54 @@ def write_geojson_snapshot(
     storage: StorageClient,
     gcs_prefix: str = DEFAULT_GCS_PREFIX,
     coord_decimals: int = DEFAULT_COORD_DECIMALS,
+    gzip_output: bool = True,
 ) -> str:
     """Write the date-stamped GeoJSON FeatureCollection. Returns the written URI."""
     uri = snapshot_uri(target_date, gcs_prefix=gcs_prefix)
     payload = build_geojson_payload(predictions, coord_decimals=coord_decimals)
-    body = json.dumps(payload, separators=(",", ":"))  # compact: snapshots can be large
-    storage.write_text(uri, body, content_type="application/geo+json")
+    _write_geojson_payload(uri, payload, storage=storage, gzip_output=gzip_output)
     LOGGER.info(
         "Wrote GeoJSON snapshot to %s (%d features)", uri, len(payload["features"])
     )
     return uri
+
+
+def write_geojson_snapshot_variants(
+    predictions: pd.DataFrame,
+    *,
+    target_date: date,
+    storage: StorageClient,
+    gcs_prefix: str = DEFAULT_GCS_PREFIX,
+    coord_decimals: int = DEFAULT_COORD_DECIMALS,
+    gzip_output: bool = True,
+) -> dict[str, dict[str, Any]]:
+    """Write pre-sampled GeoJSON snapshots for low-zoom SoCal UI rendering."""
+    variants: dict[str, dict[str, Any]] = {}
+    for key, spec in SNAPSHOT_VARIANT_SPECS.items():
+        uri = snapshot_uri(
+            target_date,
+            gcs_prefix=gcs_prefix,
+            variant_suffix=str(spec["suffix"]),
+        )
+        payload = build_geojson_payload(
+            predictions,
+            coord_decimals=coord_decimals,
+            sample_stride=int(spec["sample_stride"]),
+            sample_offset=int(spec["sample_offset"]),
+        )
+        _write_geojson_payload(uri, payload, storage=storage, gzip_output=gzip_output)
+        variants[key] = {
+            "geojson_uri": uri,
+            "feature_count": len(payload["features"]),
+            "max_zoom": int(spec["max_zoom"]),
+            "sample_stride": int(spec["sample_stride"]),
+            "sample_offset": int(spec["sample_offset"]),
+        }
+        LOGGER.info(
+            "Wrote GeoJSON %s variant to %s (%d features)",
+            key, uri, len(payload["features"])
+        )
+    return variants
 
 
 # ── manifest ─────────────────────────────────────────────────────────────────
@@ -217,8 +322,9 @@ def _upsert_manifest_window(
     geojson_uri: str,
     model_version: str,
     updated_at,
-) -> list[dict[str, str]]:
-    by_date: dict[str, dict[str, str]] = {}
+    geojson_variants: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    by_date: dict[str, dict[str, Any]] = {}
     for item in (existing or {}).get("windows", []):
         if not isinstance(item, dict) or "window_start_date" not in item:
             continue
@@ -230,6 +336,8 @@ def _upsert_manifest_window(
         }
         if "updated_at" in item:
             entry["updated_at"] = str(item["updated_at"])
+        if isinstance(item.get("geojson_variants"), dict):
+            entry["geojson_variants"] = item["geojson_variants"]
         by_date[window_key] = entry
 
     if existing and not by_date and existing.get("latest_window_start_date") and existing.get("latest_geojson_uri"):
@@ -241,15 +349,20 @@ def _upsert_manifest_window(
         }
         if "updated_at" in existing:
             entry["updated_at"] = str(existing["updated_at"])
+        if isinstance(existing.get("latest_geojson_variants"), dict):
+            entry["geojson_variants"] = existing["latest_geojson_variants"]
         by_date[window_key] = entry
 
     updated_at_text = updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at)
-    by_date[window_start_date.isoformat()] = {
+    current_entry: dict[str, Any] = {
         "window_start_date": window_start_date.isoformat(),
         "geojson_uri": geojson_uri,
         "model_version": str(model_version),
         "updated_at": updated_at_text,
     }
+    if geojson_variants:
+        current_entry["geojson_variants"] = geojson_variants
+    by_date[window_start_date.isoformat()] = current_entry
     return [by_date[key] for key in sorted(by_date)]
 
 
@@ -261,6 +374,7 @@ def update_manifest(
     updated_at,  # datetime  # noqa: ANN001 — explicit type below
     storage: StorageClient,
     gcs_prefix: str = DEFAULT_GCS_PREFIX,
+    latest_geojson_variants: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     """Monotonically advance manifest.json to point at the most recent snapshot.
 
@@ -285,6 +399,7 @@ def update_manifest(
         geojson_uri=latest_geojson_uri,
         model_version=model_version,
         updated_at=updated_at,
+        geojson_variants=latest_geojson_variants,
     )
 
     if existing_window is not None and existing_window > latest_window_start_date:
@@ -305,6 +420,8 @@ def update_manifest(
         "updated_at": incoming_updated_at,
         "windows": windows,
     }
+    if latest_geojson_variants:
+        payload["latest_geojson_variants"] = latest_geojson_variants
     if existing and "aoi_geojson_uri" in existing:
         payload["aoi_geojson_uri"] = existing["aoi_geojson_uri"]
     if existing and "status" in existing:
@@ -363,6 +480,7 @@ __all__ = [
     "PREDICTION_COLUMNS",
     "DEFAULT_GCS_PREFIX",
     "MANIFEST_FILENAME",
+    "SNAPSHOT_VARIANT_SPECS",
     "DEFAULT_MONITORING_PREFIX",
     "MONITORING_INDEX_FILENAME",
     "build_geojson_payload",
@@ -371,6 +489,7 @@ __all__ = [
     "monitoring_index_uri",
     "write_predictions_to_bq",
     "write_geojson_snapshot",
+    "write_geojson_snapshot_variants",
     "update_manifest",
     "update_monitoring_index",
 ]

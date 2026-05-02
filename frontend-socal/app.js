@@ -32,6 +32,8 @@ const state = {
   manifest: null,
   aoi: null,
   activeSnapshot: null,
+  activeSnapshotUri: "",
+  activeSnapshotPrecomputed: false,
   riskLayer: null,
   renderSignature: "",
   renderedFeatureCount: 0,
@@ -182,6 +184,13 @@ function featureSortKey(feature, fallbackIndex) {
 }
 
 function selectDisplayFeatures(features) {
+  if (state.activeSnapshotPrecomputed) {
+    return {
+      features,
+      mode: `precomputed:${state.activeSnapshotUri}`,
+    };
+  }
+
   const tier = activeLowZoomTier();
   const sampleStride = Math.max(1, Number(tier?.sampleStride) || 1);
   if (!tier || sampleStride === 1) {
@@ -310,6 +319,7 @@ function normalizeWindows(manifest) {
         {
           window_start_date: manifest.latest_window_start_date,
           geojson_uri: manifest.latest_geojson_uri,
+          geojson_variants: manifest.latest_geojson_variants || {},
           model_version: manifest.model_version,
           updated_at: manifest.updated_at,
         },
@@ -319,6 +329,7 @@ function normalizeWindows(manifest) {
     .map((item) => ({
       window_start_date: String(item.window_start_date),
       geojson_uri: item.geojson_uri,
+      geojson_variants: item.geojson_variants || {},
       model_version: item.model_version || manifest.model_version || "Unavailable",
       updated_at: item.updated_at || manifest.updated_at || "",
     }))
@@ -335,8 +346,24 @@ function cacheSet(key, value) {
   }
 }
 
-async function loadSnapshot(windowEntry) {
-  const url = resolveAssetUrl(windowEntry.geojson_uri);
+function selectSnapshotSource(windowEntry) {
+  const tier = activeLowZoomTier();
+  const variantKey = tier?.variantKey;
+  const variant = variantKey ? windowEntry.geojson_variants?.[variantKey] : null;
+  if (variant?.geojson_uri) {
+    return {
+      uri: variant.geojson_uri,
+      isPrecomputed: true,
+    };
+  }
+  return {
+    uri: windowEntry.geojson_uri,
+    isPrecomputed: false,
+  };
+}
+
+async function loadSnapshot(source) {
+  const url = resolveAssetUrl(source.uri);
   if (state.cache.has(url)) {
     const cached = state.cache.get(url);
     cacheSet(url, cached);
@@ -353,9 +380,10 @@ function prefetchSnapshots(index, offsets = [-1, 1]) {
     if (candidate < 0 || candidate >= state.windows.length) {
       return;
     }
-    const url = resolveAssetUrl(state.windows[candidate].geojson_uri);
+    const source = selectSnapshotSource(state.windows[candidate]);
+    const url = resolveAssetUrl(source.uri);
     if (!state.cache.has(url)) {
-      loadSnapshot(state.windows[candidate]).catch(() => undefined);
+      loadSnapshot(source).catch(() => undefined);
     }
   });
 }
@@ -418,8 +446,11 @@ async function setActiveIndex(index, { prefetch = true } = {}) {
   updateTimelineUi();
   setStatus(`Loading ${windowEntry.window_start_date} snapshot...`);
   try {
-    const riskGeojson = await loadSnapshot(windowEntry);
+    const source = selectSnapshotSource(windowEntry);
+    const riskGeojson = await loadSnapshot(source);
     state.activeSnapshot = riskGeojson;
+    state.activeSnapshotUri = resolveAssetUrl(source.uri);
+    state.activeSnapshotPrecomputed = source.isPrecomputed;
     state.renderSignature = "";
     renderActiveSnapshot({ force: true });
     updateMetadata(state.manifest, state.aoi, riskGeojson, windowEntry);
@@ -503,6 +534,12 @@ function bindControls() {
     }
   });
   map.on("zoomend", () => {
+    const windowEntry = state.windows[state.activeIndex];
+    const source = windowEntry ? selectSnapshotSource(windowEntry) : null;
+    if (source && resolveAssetUrl(source.uri) !== state.activeSnapshotUri) {
+      setActiveIndex(state.activeIndex);
+      return;
+    }
     const previousCount = state.renderedFeatureCount;
     renderActiveSnapshot();
     if (state.activeSnapshot && previousCount !== state.renderedFeatureCount) {

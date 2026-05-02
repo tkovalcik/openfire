@@ -100,6 +100,7 @@ class StorageClient:
         payload: bytes,
         *,
         content_type: str | None = None,
+        content_encoding: str | None = None,
     ) -> str:
         location = self.parse_uri(uri)
         if location.scheme == "local":
@@ -108,6 +109,8 @@ class StorageClient:
             return location.raw_uri
 
         blob = self._gcs_blob(location)
+        if content_encoding:
+            blob.content_encoding = content_encoding
         blob.upload_from_string(payload, content_type=content_type)
         return location.raw_uri
 
