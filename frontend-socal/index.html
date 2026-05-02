@@ -55,6 +55,32 @@
         </section>
 
         <section class="panel">
+          <div class="panel-heading">
+            <h2>Time</h2>
+            <button id="playback-toggle" class="icon-button" type="button" aria-label="Play timeline">
+              Play
+            </button>
+          </div>
+          <div class="timeline-control">
+            <div class="timeline-meta">
+              <span id="timeline-date">Loading...</span>
+              <span id="timeline-position">0 / 0</span>
+            </div>
+            <input
+              id="timeline-slider"
+              type="range"
+              min="0"
+              max="0"
+              step="1"
+              value="0"
+              disabled
+              aria-label="Prediction window"
+            />
+            <div id="timeline-ticks" class="timeline-ticks" aria-hidden="true"></div>
+          </div>
+        </section>
+
+        <section class="panel">
           <h2>Source</h2>
           <p id="source-message" class="status-message">Loading manifest...</p>
           <p id="status-message" class="status-message">Loading map...</p>
