@@ -190,18 +190,67 @@ def write_geojson_snapshot(
 
 # ── manifest ─────────────────────────────────────────────────────────────────
 
-def _read_existing_manifest_window(storage: StorageClient, uri: str) -> date | None:
-    """Return the existing manifest's latest_window_start_date, or None if no
-    usable manifest is present. A corrupt or unreadable manifest is treated as
-    absent (logged) so a re-run can recover by overwriting it."""
+def _read_existing_manifest(storage: StorageClient, uri: str) -> dict[str, Any] | None:
+    """Return the existing manifest payload, or None if it is absent/unusable."""
     try:
         if not storage.exists(uri):
             return None
-        existing = storage.read_json(uri)
-        return date.fromisoformat(existing["latest_window_start_date"])
-    except (StorageError, KeyError, ValueError, TypeError) as exc:
+        return storage.read_json(uri)
+    except (StorageError, ValueError, TypeError) as exc:
         LOGGER.warning("Existing manifest at %s unreadable (%s); will overwrite.", uri, exc)
         return None
+
+
+def _manifest_window(manifest: dict[str, Any] | None) -> date | None:
+    if not manifest:
+        return None
+    try:
+        return date.fromisoformat(str(manifest["latest_window_start_date"]))
+    except (KeyError, ValueError, TypeError):
+        return None
+
+
+def _upsert_manifest_window(
+    existing: dict[str, Any] | None,
+    *,
+    window_start_date: date,
+    geojson_uri: str,
+    model_version: str,
+    updated_at,
+) -> list[dict[str, str]]:
+    by_date: dict[str, dict[str, str]] = {}
+    for item in (existing or {}).get("windows", []):
+        if not isinstance(item, dict) or "window_start_date" not in item:
+            continue
+        window_key = str(item["window_start_date"])
+        entry = {
+            "window_start_date": window_key,
+            "geojson_uri": str(item.get("geojson_uri", item.get("latest_geojson_uri", ""))),
+            "model_version": str(item.get("model_version", "")),
+        }
+        if "updated_at" in item:
+            entry["updated_at"] = str(item["updated_at"])
+        by_date[window_key] = entry
+
+    if existing and not by_date and existing.get("latest_window_start_date") and existing.get("latest_geojson_uri"):
+        window_key = str(existing["latest_window_start_date"])
+        entry = {
+            "window_start_date": window_key,
+            "geojson_uri": str(existing["latest_geojson_uri"]),
+            "model_version": str(existing.get("model_version", "")),
+        }
+        if "updated_at" in existing:
+            entry["updated_at"] = str(existing["updated_at"])
+        by_date[window_key] = entry
+
+    updated_at_text = updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at)
+    by_date[window_start_date.isoformat()] = {
+        "window_start_date": window_start_date.isoformat(),
+        "geojson_uri": geojson_uri,
+        "model_version": str(model_version),
+        "updated_at": updated_at_text,
+    }
+    return [by_date[key] for key in sorted(by_date)]
 
 
 def update_manifest(
@@ -227,21 +276,41 @@ def update_manifest(
     new one, never a partial. No temp-then-rename dance required.
     """
     uri = manifest_uri(gcs_prefix=gcs_prefix)
-    existing_window = _read_existing_manifest_window(storage, uri)
+    existing = _read_existing_manifest(storage, uri)
+    existing_window = _manifest_window(existing)
+    incoming_updated_at = updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at)
+    windows = _upsert_manifest_window(
+        existing,
+        window_start_date=latest_window_start_date,
+        geojson_uri=latest_geojson_uri,
+        model_version=model_version,
+        updated_at=updated_at,
+    )
+
     if existing_window is not None and existing_window > latest_window_start_date:
         LOGGER.warning(
             "Skipping manifest update at %s: existing window %s is newer than %s "
-            "(refusing to regress the frontier).",
+            "(refusing to regress the frontier; window index will still be updated).",
             uri, existing_window.isoformat(), latest_window_start_date.isoformat(),
         )
+        payload = dict(existing or {})
+        payload["windows"] = windows
+        storage.write_json(uri, payload)
         return uri
 
     payload = {
         "latest_window_start_date": latest_window_start_date.isoformat(),
         "latest_geojson_uri": latest_geojson_uri,
         "model_version": str(model_version),
-        "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at),
+        "updated_at": incoming_updated_at,
+        "windows": windows,
     }
+    if existing and "aoi_geojson_uri" in existing:
+        payload["aoi_geojson_uri"] = existing["aoi_geojson_uri"]
+    if existing and "status" in existing:
+        payload["status"] = existing["status"]
+    if existing and "source" in existing:
+        payload["source"] = existing["source"]
     storage.write_json(uri, payload)
     LOGGER.info("Updated manifest at %s → %s", uri, latest_geojson_uri)
     return uri

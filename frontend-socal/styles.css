@@ -4,6 +4,8 @@
   --ink: #1e2b26;
   --muted: #5b6762;
   --line: rgba(40, 58, 50, 0.18);
+  --accent: #b55238;
+  --accent-dark: #7f2d32;
   --shadow: 0 16px 42px rgba(31, 42, 36, 0.16);
 }
 
@@ -70,6 +72,38 @@ h2 {
   margin-bottom: 0.75rem;
 }
 
+.panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.panel-heading h2 {
+  margin-bottom: 0;
+}
+
+.icon-button {
+  min-width: 64px;
+  min-height: 34px;
+  border: 1px solid rgba(40, 58, 50, 0.24);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.icon-button:hover,
+.icon-button:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid rgba(181, 82, 56, 0.18);
+  outline-offset: 2px;
+}
+
 .lede,
 .status-message {
   margin: 0.55rem 0 0;
@@ -119,6 +153,67 @@ h2 {
   height: 18px;
   border-radius: 4px;
   border: 1px solid rgba(0, 0, 0, 0.16);
+}
+
+.timeline-control {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.timeline-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 24px;
+}
+
+#timeline-date {
+  font-size: 1rem;
+  font-weight: 750;
+}
+
+#timeline-position {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+#timeline-slider {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.timeline-ticks {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(4px, 1fr);
+  align-items: center;
+  gap: 3px;
+  min-height: 20px;
+}
+
+.timeline-tick {
+  width: 100%;
+  height: 12px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: rgba(91, 103, 98, 0.28);
+  cursor: pointer;
+}
+
+.timeline-tick:hover,
+.timeline-tick:focus-visible {
+  background: var(--accent);
+  outline: 2px solid rgba(181, 82, 56, 0.18);
+  outline-offset: 2px;
+}
+
+.timeline-tick.is-active {
+  height: 18px;
+  background: var(--accent-dark);
 }
 
 .map-shell {
@@ -179,9 +274,24 @@ h2 {
   .sidebar {
     border-right: 0;
     border-bottom: 1px solid var(--line);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .brand-block {
+    grid-column: 1 / -1;
   }
 
   #map {
     height: 68vh;
+  }
+}
+
+@media (max-width: 640px) {
+  .sidebar {
+    grid-template-columns: 1fr;
+  }
+
+  .brand-block {
+    grid-column: auto;
   }
 }

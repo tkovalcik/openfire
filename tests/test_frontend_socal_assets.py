@@ -3,6 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
+from src.ui_socal import app as ui_app
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SOCAL_DATA = ROOT / "frontend-socal" / "data"
@@ -24,6 +28,11 @@ def test_socal_manifest_points_to_existing_geojson() -> None:
     assert risk["type"] == "FeatureCollection"
     assert len(risk["features"]) == 65_000
     assert manifest["latest_window_start_date"] == "2024-07-26"
+    assert [item["window_start_date"] for item in manifest["windows"]] == [
+        "2024-07-16",
+        "2024-07-21",
+        "2024-07-26",
+    ]
     assert all("risk_probability" in feature["properties"] for feature in risk["features"])
 
 
@@ -36,3 +45,65 @@ def test_socal_aoi_asset_contains_expected_four_counties() -> None:
 
     assert geoids == EXPECTED_GEOIDS
     assert names == {"Kern", "Los Angeles", "San Luis Obispo", "Santa Barbara"}
+
+
+def test_socal_ui_has_live_manifest_and_timeline_controls() -> None:
+    config = (ROOT / "frontend-socal" / "config.js").read_text(encoding="utf-8")
+    html = (ROOT / "frontend-socal" / "index.html").read_text(encoding="utf-8")
+    app = (ROOT / "frontend-socal" / "app.js").read_text(encoding="utf-8")
+
+    assert "/data/manifest.json" in config
+    assert "socal_demo_manifest.json" in config
+    assert 'id="timeline-slider"' in html
+    assert 'id="playback-toggle"' in html
+    assert "gs://openfire/predictions/" in app
+    assert "config.snapshotCacheSize" in app
+
+
+def test_socal_ui_service_serves_static_files(monkeypatch) -> None:
+    monkeypatch.setattr(ui_app, "STATIC_ROOT", ROOT / "frontend-socal")
+    client = TestClient(ui_app.app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "OpenFire SoCal AOI" in response.text
+
+
+def test_socal_ui_data_proxy_reads_private_gcs(monkeypatch) -> None:
+    class FakeBlob:
+        content_type = "application/json"
+
+        def exists(self) -> bool:
+            return True
+
+        def download_as_bytes(self) -> bytes:
+            return b'{"ok": true}'
+
+    class FakeBucket:
+        def blob(self, name: str) -> FakeBlob:
+            assert name == "predictions/manifest.json"
+            return FakeBlob()
+
+    class FakeClient:
+        def bucket(self, name: str) -> FakeBucket:
+            assert name == "openfire"
+            return FakeBucket()
+
+    monkeypatch.setattr(ui_app, "_storage_client", FakeClient())
+    client = TestClient(ui_app.app)
+
+    response = client.get("/data/manifest.json")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_socal_ui_data_route_serves_static_aoi(monkeypatch) -> None:
+    monkeypatch.setattr(ui_app, "STATIC_ROOT", ROOT / "frontend-socal")
+    client = TestClient(ui_app.app)
+
+    response = client.get("/data/aoi_counties.geojson")
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "FeatureCollection"
