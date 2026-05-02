@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pandas as pd
 import pytest
 
 from pipelines.engineer_gold import (
@@ -80,6 +81,50 @@ def test_engineer_inference_gold_uses_merge_into_inference_table() -> None:
     assert "MERGE `msds603-mlops-project.openfire_features.gold_features_inference`" in sql
     # Reads from silver_features_* (training silver) but in a SELECT, not DML.
     assert "FROM `msds603-mlops-project.openfire_features.silver_features_*`" in sql
+
+
+def test_inference_sql_normalizes_coordinate_keys_for_lag_windows() -> None:
+    sql = MERGE_FILE.read_text()
+    assert 'FORMAT("%.6f", s.latitude)  AS lat_key' in sql
+    assert 'FORMAT("%.6f", s.longitude) AS lon_key' in sql
+    assert "PARTITION BY lat_key, lon_key, window_start_date" in sql
+    assert "PARTITION BY lat_key, lon_key" in sql
+
+
+def test_normalized_coordinate_keys_preserve_60d_lag_under_float_jitter() -> None:
+    dates = pd.date_range("2025-10-29", periods=13, freq="5D").date
+    rows = []
+    for i, d in enumerate(dates):
+        # Same visible centroid at 6 decimals, but exact float strings drift
+        # across extraction runs.
+        lat = 34.1234561 if i < 12 else 34.1234562
+        lon = -118.6543211 if i < 12 else -118.6543212
+        rows.append({
+            "window_start_date": d,
+            "latitude": lat,
+            "longitude": lon,
+            "mean_NDVI": 0.1 * (i + 1),
+        })
+    df = pd.DataFrame(rows)
+
+    exact = df.sort_values("window_start_date").copy()
+    exact["cell_key"] = exact["latitude"].astype(str) + "," + exact["longitude"].astype(str)
+    exact["ndvi_change_60d"] = (
+        exact["mean_NDVI"] - exact.groupby("cell_key")["mean_NDVI"].shift(12)
+    )
+
+    normalized = df.sort_values("window_start_date").copy()
+    normalized["cell_key"] = (
+        normalized["latitude"].map(lambda x: f"{x:.6f}")
+        + ","
+        + normalized["longitude"].map(lambda x: f"{x:.6f}")
+    )
+    normalized["ndvi_change_60d"] = (
+        normalized["mean_NDVI"] - normalized.groupby("cell_key")["mean_NDVI"].shift(12)
+    )
+
+    assert pd.isna(exact.loc[exact.index[-1], "ndvi_change_60d"])
+    assert normalized.loc[normalized.index[-1], "ndvi_change_60d"] == pytest.approx(1.2)
 
 
 def test_engineer_inference_gold_handles_zero_affected_rows() -> None:
