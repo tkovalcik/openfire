@@ -25,9 +25,14 @@ CREATE TABLE IF NOT EXISTS `msds603-mlops-project.openfire_features.predictions_
   predicted_label   INT64     NOT NULL,
   model_name        STRING    NOT NULL,
   model_version     STRING    NOT NULL,
-  inference_run_at  TIMESTAMP NOT NULL
+  inference_run_at  TIMESTAMP NOT NULL,
+  -- BQ cannot CLUSTER BY FLOAT64; lat_bin/lon_bin are 0.1 degree integer bins
+  -- (~11 km) that enable spatial clustering for viewport queries.
+  lat_bin           INT64     NOT NULL,
+  lon_bin           INT64     NOT NULL
 )
-PARTITION BY window_start_date;
+PARTITION BY window_start_date
+CLUSTER BY lat_bin, lon_bin;
 
 
 CREATE TABLE IF NOT EXISTS `msds603-mlops-project.openfire_features.gold_features_inference`

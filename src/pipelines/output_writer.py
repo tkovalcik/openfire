@@ -110,9 +110,13 @@ def write_predictions_to_bq(
             bigquery.SchemaField("model_name",        "STRING",    mode="REQUIRED"),
             bigquery.SchemaField("model_version",     "STRING",    mode="REQUIRED"),
             bigquery.SchemaField("inference_run_at",  "TIMESTAMP", mode="REQUIRED"),
+            bigquery.SchemaField("lat_bin",           "INT64",     mode="REQUIRED"),
+            bigquery.SchemaField("lon_bin",           "INT64",     mode="REQUIRED"),
         ],
     )
-    payload = predictions[PREDICTION_COLUMNS]
+    payload = predictions[PREDICTION_COLUMNS].copy()
+    payload["lat_bin"] = (payload["latitude"] * 10).round().astype("int64")
+    payload["lon_bin"] = (payload["longitude"] * 10).round().astype("int64")
     job = bq_client.load_table_from_dataframe(payload, destination, job_config=job_config)
     job.result()
     rows = len(payload)
