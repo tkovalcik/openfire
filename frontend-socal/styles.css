@@ -26,15 +26,20 @@ body {
 }
 
 .app-shell {
-  min-height: 100vh;
+  height: 100vh;
   display: grid;
   grid-template-columns: 350px 1fr;
+  overflow: hidden;
 }
 
 .sidebar {
   display: grid;
   align-content: start;
   gap: 1rem;
+  height: 100vh;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 1rem;
   background: var(--panel);
   border-right: 1px solid var(--line);
@@ -72,16 +77,69 @@ h2 {
   margin-bottom: 0.75rem;
 }
 
-.panel-heading {
+.panel-toggle {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  margin-bottom: 0.75rem;
+  width: 100%;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 750;
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
 }
 
-.panel-heading h2 {
-  margin-bottom: 0;
+.panel-toggle:hover,
+.panel-toggle:focus-visible {
+  color: var(--accent-dark);
+  outline: 2px solid rgba(181, 82, 56, 0.18);
+  outline-offset: 4px;
+}
+
+.disclosure-icon {
+  position: relative;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+}
+
+.disclosure-icon::before,
+.disclosure-icon::after {
+  position: absolute;
+  top: 8px;
+  left: 4px;
+  width: 10px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  content: "";
+}
+
+.disclosure-icon::after {
+  transform: rotate(90deg);
+  transition: transform 160ms ease;
+}
+
+.panel-toggle[aria-expanded="true"] .disclosure-icon::after {
+  transform: rotate(0deg);
+}
+
+.panel-body {
+  margin-top: 0.75rem;
+}
+
+.panel-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-bottom: 0.75rem;
 }
 
 .icon-button {
@@ -217,6 +275,7 @@ h2 {
 }
 
 .map-shell {
+  min-height: 0;
   padding: 0;
 }
 
@@ -268,10 +327,16 @@ h2 {
 
 @media (max-width: 960px) {
   .app-shell {
+    height: auto;
+    min-height: 100vh;
     grid-template-columns: 1fr;
+    overflow: visible;
   }
 
   .sidebar {
+    max-height: 42vh;
+    height: auto;
+    overflow-y: auto;
     border-right: 0;
     border-bottom: 1px solid var(--line);
     grid-template-columns: repeat(2, minmax(0, 1fr));

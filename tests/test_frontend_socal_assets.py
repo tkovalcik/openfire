@@ -52,12 +52,19 @@ def test_socal_ui_has_live_manifest_and_timeline_controls() -> None:
     config = (ROOT / "frontend-socal" / "config.js").read_text(encoding="utf-8")
     html = (ROOT / "frontend-socal" / "index.html").read_text(encoding="utf-8")
     app = (ROOT / "frontend-socal" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "frontend-socal" / "styles.css").read_text(encoding="utf-8")
 
     assert "/data/manifest.json" in config
     assert "socal_demo_manifest.json" in config
     assert 'id="timeline-slider"' in html
     assert 'id="playback-toggle"' in html
     assert 'id="meta-render-mode"' in html
+    assert html.index("Snapshot") < html.index("Time") < html.index("Legend") < html.index("Source")
+    assert 'data-collapsible-panel' in html
+    assert "bindCollapsiblePanels" in app
+    assert "height: 100vh;" in styles
+    assert "overflow-y: auto;" in styles
+    assert "overscroll-behavior: contain;" in styles
     assert "gs://openfire/predictions/" in app
     assert "config.snapshotCacheSize" in app
     assert "lowZoomPerformance" in config
