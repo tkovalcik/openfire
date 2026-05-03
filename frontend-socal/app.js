@@ -427,8 +427,10 @@ function normalizeWindows(manifest) {
           updated_at: manifest.updated_at,
         },
       ];
+  const excludedWindowStartDates = new Set(config.excludedWindowStartDates || []);
   return rawWindows
     .filter((item) => item.window_start_date && item.geojson_uri)
+    .filter((item) => !excludedWindowStartDates.has(String(item.window_start_date)))
     .map((item) => ({
       window_start_date: String(item.window_start_date),
       geojson_uri: item.geojson_uri,
