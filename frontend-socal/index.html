@@ -23,71 +23,111 @@
           </p>
         </div>
 
-        <section class="panel">
-          <h2>Snapshot</h2>
-          <dl class="metadata-grid">
-            <div>
-              <dt>Status</dt>
-              <dd id="meta-status">Loading...</dd>
-            </div>
-            <div>
-              <dt>Window date</dt>
-              <dd id="meta-window-date">Loading...</dd>
-            </div>
-            <div>
-              <dt>Model version</dt>
-              <dd id="meta-model-version">Loading...</dd>
-            </div>
-            <div>
-              <dt>Risk features</dt>
-              <dd id="meta-feature-count">Loading...</dd>
-            </div>
-            <div>
-              <dt>Render mode</dt>
-              <dd id="meta-render-mode">Loading...</dd>
-            </div>
-            <div>
-              <dt>AOI counties</dt>
-              <dd id="meta-county-count">Loading...</dd>
-            </div>
-          </dl>
-        </section>
-
-        <section class="panel">
-          <h2>Legend</h2>
-          <div id="legend" class="legend"></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-heading">
-            <h2>Time</h2>
-            <button id="playback-toggle" class="icon-button" type="button" aria-label="Play timeline">
-              Play
-            </button>
-          </div>
-          <div class="timeline-control">
-            <div class="timeline-meta">
-              <span id="timeline-date">Loading...</span>
-              <span id="timeline-position">0 / 0</span>
-            </div>
-            <input
-              id="timeline-slider"
-              type="range"
-              min="0"
-              max="0"
-              step="1"
-              value="0"
-              disabled
-              aria-label="Prediction window"
-            />
-            <div id="timeline-ticks" class="timeline-ticks" aria-hidden="true"></div>
+        <section class="panel collapsible-panel" data-collapsible-panel>
+          <button
+            class="panel-toggle"
+            type="button"
+            aria-expanded="true"
+            aria-controls="snapshot-panel-body"
+          >
+            <span>Snapshot</span>
+            <span class="disclosure-icon" aria-hidden="true"></span>
+          </button>
+          <div id="snapshot-panel-body" class="panel-body">
+            <dl class="metadata-grid">
+              <div>
+                <dt>Status</dt>
+                <dd id="meta-status">Loading...</dd>
+              </div>
+              <div>
+                <dt>Window date</dt>
+                <dd id="meta-window-date">Loading...</dd>
+              </div>
+              <div>
+                <dt>Model version</dt>
+                <dd id="meta-model-version">Loading...</dd>
+              </div>
+              <div>
+                <dt>Risk features</dt>
+                <dd id="meta-feature-count">Loading...</dd>
+              </div>
+              <div>
+                <dt>Render mode</dt>
+                <dd id="meta-render-mode">Loading...</dd>
+              </div>
+              <div>
+                <dt>AOI counties</dt>
+                <dd id="meta-county-count">Loading...</dd>
+              </div>
+            </dl>
           </div>
         </section>
 
-        <section class="panel">
-          <h2>Source</h2>
-          <p id="source-message" class="status-message">Loading manifest...</p>
-          <p id="status-message" class="status-message">Loading map...</p>
+        <section class="panel collapsible-panel" data-collapsible-panel>
+          <button
+            class="panel-toggle"
+            type="button"
+            aria-expanded="true"
+            aria-controls="time-panel-body"
+          >
+            <span>Time</span>
+            <span class="disclosure-icon" aria-hidden="true"></span>
+          </button>
+          <div id="time-panel-body" class="panel-body">
+            <div class="panel-actions">
+              <button id="playback-toggle" class="icon-button" type="button" aria-label="Play timeline">
+                Play
+              </button>
+            </div>
+            <div class="timeline-control">
+              <div class="timeline-meta">
+                <span id="timeline-date">Loading...</span>
+                <span id="timeline-position">0 / 0</span>
+              </div>
+              <input
+                id="timeline-slider"
+                type="range"
+                min="0"
+                max="0"
+                step="1"
+                value="0"
+                disabled
+                aria-label="Prediction window"
+              />
+              <div id="timeline-ticks" class="timeline-ticks" aria-hidden="true"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel collapsible-panel" data-collapsible-panel>
+          <button
+            class="panel-toggle"
+            type="button"
+            aria-expanded="false"
+            aria-controls="legend-panel-body"
+          >
+            <span>Legend</span>
+            <span class="disclosure-icon" aria-hidden="true"></span>
+          </button>
+          <div id="legend-panel-body" class="panel-body" hidden>
+            <div id="legend" class="legend"></div>
+          </div>
+        </section>
+
+        <section class="panel collapsible-panel" data-collapsible-panel>
+          <button
+            class="panel-toggle"
+            type="button"
+            aria-expanded="false"
+            aria-controls="source-panel-body"
+          >
+            <span>Source</span>
+            <span class="disclosure-icon" aria-hidden="true"></span>
+          </button>
+          <div id="source-panel-body" class="panel-body" hidden>
+            <p id="source-message" class="status-message">Loading manifest...</p>
+            <p id="status-message" class="status-message">Loading map...</p>
+          </div>
         </section>
       </aside>
 
