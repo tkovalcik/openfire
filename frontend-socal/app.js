@@ -525,7 +525,28 @@ function togglePlayback() {
   }
 }
 
+function bindCollapsiblePanels() {
+  document.querySelectorAll("[data-collapsible-panel]").forEach((panel) => {
+    const toggle = panel.querySelector(".panel-toggle");
+    const body = toggle ? document.getElementById(toggle.getAttribute("aria-controls")) : null;
+    if (!toggle || !body) {
+      return;
+    }
+
+    const setExpanded = (isExpanded) => {
+      toggle.setAttribute("aria-expanded", String(isExpanded));
+      body.hidden = !isExpanded;
+    };
+
+    setExpanded(toggle.getAttribute("aria-expanded") === "true");
+    toggle.addEventListener("click", () => {
+      setExpanded(toggle.getAttribute("aria-expanded") !== "true");
+    });
+  });
+}
+
 function bindControls() {
+  bindCollapsiblePanels();
   nodes.slider.addEventListener("input", (event) => {
     stopPlayback();
     setActiveIndex(Number(event.target.value));
