@@ -56,6 +56,8 @@ def test_socal_ui_has_live_manifest_and_timeline_controls() -> None:
 
     assert "/data/manifest.json" in config
     assert "socal_demo_manifest.json" in config
+    assert 'excludedWindowStartDates: ["2025-12-23", "2025-12-28"]' in config
+    assert "excludedWindowStartDates" in app
     assert 'id="timeline-slider"' in html
     assert 'id="playback-toggle"' in html
     assert 'id="meta-render-mode"' in html
@@ -68,6 +70,8 @@ def test_socal_ui_has_live_manifest_and_timeline_controls() -> None:
     assert "gs://openfire/predictions/" in app
     assert "config.snapshotCacheSize" in app
     assert "lowZoomPerformance" in config
+    assert "{ maxZoom: 7, sampleStride: 6" in config
+    assert "{ maxZoom: 9, sampleStride: 3" in config
     assert "selectDisplayFeatures" in app
     assert "geojson_variants" in app
     assert "variantKey" in config
@@ -83,6 +87,18 @@ def test_socal_ui_has_live_manifest_and_timeline_controls() -> None:
     assert "animateRiskLayerOpacity" in app
     assert "LARGE_LAYER_TRANSITION_THRESHOLD" in app
     assert "requestAnimationFrame" in app
+    assert config.count("Model risk") == 8
+    assert "Model risk 0.000-0.125" in config
+    assert "Model risk 0.875-1.000" in config
+    assert '"#3b8f70"' in config
+    assert '"#72a95d"' in config
+    assert '"#a8bd51"' in config
+    assert '"#e2b84b"' in config
+    assert '"#df913f"' in config
+    assert '"#d8643f"' in config
+    assert '"#bd3f38"' in config
+    assert '"#8f2430"' in config
+    assert '"#2f6fba"' not in config
 
 
 def test_socal_ui_service_serves_static_files(monkeypatch) -> None:
