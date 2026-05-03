@@ -119,6 +119,51 @@
             class="panel-toggle"
             type="button"
             aria-expanded="false"
+            aria-controls="performance-panel-body"
+          >
+            <span>Performance</span>
+            <span class="disclosure-icon" aria-hidden="true"></span>
+          </button>
+          <div id="performance-panel-body" class="panel-body" hidden>
+            <dl class="metadata-grid performance-grid">
+              <div>
+                <dt>Latest</dt>
+                <dd id="perf-latest">Waiting...</dd>
+              </div>
+              <div>
+                <dt>Snapshot load</dt>
+                <dd id="perf-snapshot-load">Waiting...</dd>
+              </div>
+              <div>
+                <dt>Render</dt>
+                <dd id="perf-render">Waiting...</dd>
+              </div>
+              <div>
+                <dt>Paint</dt>
+                <dd id="perf-paint">Waiting...</dd>
+              </div>
+              <div>
+                <dt>P95 paint</dt>
+                <dd id="perf-p95-paint">Waiting...</dd>
+              </div>
+              <div>
+                <dt>Long tasks</dt>
+                <dd id="perf-long-tasks">0</dd>
+              </div>
+            </dl>
+            <div class="panel-actions panel-actions-left">
+              <a class="panel-link" href="/metrics/ui/dashboard" target="_blank" rel="noreferrer">
+                Dashboard
+              </a>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel collapsible-panel" data-collapsible-panel>
+          <button
+            class="panel-toggle"
+            type="button"
+            aria-expanded="false"
             aria-controls="source-panel-body"
           >
             <span>Source</span>
@@ -141,6 +186,7 @@
       integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
       crossorigin=""
     ></script>
+    <script src="./runtime-config.js"></script>
     <script src="./config.js"></script>
     <script src="./app.js"></script>
   </body>
