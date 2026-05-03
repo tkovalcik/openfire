@@ -75,6 +75,14 @@ def test_socal_ui_has_live_manifest_and_timeline_controls() -> None:
     assert "client fallback" in app
     assert "precomputed" in app
     assert "renderActiveSnapshot" in app
+    assert "configureMapPanes" in app
+    assert '"riskPane", 410' in app
+    assert '"aoiPane", 430' in app
+    assert '"labelPane", 610' in app
+    assert "pointVisualStyle" in app
+    assert "animateRiskLayerOpacity" in app
+    assert "LARGE_LAYER_TRANSITION_THRESHOLD" in app
+    assert "requestAnimationFrame" in app
 
 
 def test_socal_ui_service_serves_static_files(monkeypatch) -> None:
