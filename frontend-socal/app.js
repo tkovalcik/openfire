@@ -503,6 +503,12 @@ function telemetryEvent(sample) {
     web_vital_delta: sample.webVitalDelta,
     web_vital_rating: sample.webVitalRating,
     web_vital_navigation_type: sample.webVitalNavigationType,
+    error_type: sample.errorType,
+    error_message: sample.errorMessage,
+    error_source: sample.errorSource,
+    error_line: sample.errorLine,
+    error_column: sample.errorColumn,
+    error_stack_hash: sample.errorStackHash,
   };
 }
 
@@ -529,6 +535,62 @@ function telemetryPayload(events) {
 function finiteNumber(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
+}
+
+function truncateText(value, maxLength) {
+  const text = String(value || "");
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function hashText(value) {
+  const text = String(value || "");
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function errorDetails(errorLike) {
+  if (errorLike instanceof Error) {
+    return {
+      type: errorLike.name || "Error",
+      message: errorLike.message || "Unhandled error",
+      stack: errorLike.stack || "",
+    };
+  }
+  if (typeof errorLike === "string") {
+    return { type: "Error", message: errorLike, stack: "" };
+  }
+  return {
+    type: errorLike?.name || "Error",
+    message: errorLike?.message || String(errorLike || "Unhandled error"),
+    stack: errorLike?.stack || "",
+  };
+}
+
+function recordBrowserError(details) {
+  if (!isPerformanceTrackingEnabled()) {
+    return;
+  }
+
+  enqueuePerformanceTelemetry({
+    action: "browser-error",
+    timestamp: new Date().toISOString(),
+    windowStartDate: state.windows[state.activeIndex]?.window_start_date || null,
+    zoom: map.getZoom(),
+    sourceLabel: details.kind || "browser-error",
+    errorType: truncateText(details.type, 128),
+    errorMessage: truncateText(details.message, 512),
+    errorSource: truncateText(details.source, 2048),
+    errorLine: Number.isFinite(details.line) ? details.line : null,
+    errorColumn: Number.isFinite(details.column) ? details.column : null,
+    errorStackHash: details.stack ? hashText(details.stack) : null,
+  });
 }
 
 function buildFaroMeasurement(sample) {
@@ -780,6 +842,38 @@ function bindWebVitals() {
     .catch((error) => {
       console.warn("[OpenFire UI perf] Web Vitals disabled:", error);
     });
+}
+
+function bindBrowserErrorTelemetry() {
+  if (!isPerformanceTrackingEnabled()) {
+    return;
+  }
+
+  window.addEventListener("error", (event) => {
+    const detail = errorDetails(event.error || event.message);
+    recordBrowserError({
+      kind: "window-error",
+      type: detail.type,
+      message: detail.message,
+      stack: detail.stack,
+      source: event.filename || "",
+      line: event.lineno,
+      column: event.colno,
+    });
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    const detail = errorDetails(event.reason);
+    recordBrowserError({
+      kind: "unhandledrejection",
+      type: detail.type,
+      message: detail.message,
+      stack: detail.stack,
+      source: "promise",
+      line: null,
+      column: null,
+    });
+  });
 }
 
 function installPerformanceExport() {
@@ -1406,6 +1500,7 @@ async function boot() {
   bindPerformanceObservers();
   initializeFaroTelemetry();
   bindWebVitals();
+  bindBrowserErrorTelemetry();
   bindPerformanceTelemetry();
   updatePerformancePanel();
   setStatus("Loading SoCal manifest...");

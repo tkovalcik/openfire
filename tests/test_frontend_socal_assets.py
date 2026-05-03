@@ -80,6 +80,10 @@ def test_socal_ui_has_live_manifest_and_timeline_controls() -> None:
     assert "pushMeasurement" in app
     assert "bindWebVitals" in app
     assert "recordWebVitalMetric" in app
+    assert "bindBrowserErrorTelemetry" in app
+    assert "recordBrowserError" in app
+    assert "unhandledrejection" in app
+    assert "error_stack_hash" in app
     assert "OPENFIRE_SOCAL_PERFORMANCE" in app
     assert "enqueuePerformanceTelemetry" in app
     assert "flushPerformanceTelemetry" in app
@@ -199,6 +203,9 @@ def test_socal_ui_performance_metrics_persist_to_bigquery(monkeypatch) -> None:
             self.inserted_table_id = ""
             self.inserted_rows = []
 
+        def get_table(self, table_id: str):
+            raise ui_app.NotFound("missing table")
+
         def create_table(self, table, *, exists_ok: bool = False):
             assert exists_ok is True
             self.created_table = table
@@ -247,6 +254,12 @@ def test_socal_ui_performance_metrics_persist_to_bigquery(monkeypatch) -> None:
                     "web_vital_name": "INP",
                     "web_vital_value": 122.5,
                     "web_vital_rating": "needs-improvement",
+                    "error_type": "TypeError",
+                    "error_message": "Smoke test error",
+                    "error_source": "app.js",
+                    "error_line": 10,
+                    "error_column": 20,
+                    "error_stack_hash": "abcd1234",
                 }
             ],
         },
@@ -267,6 +280,12 @@ def test_socal_ui_performance_metrics_persist_to_bigquery(monkeypatch) -> None:
     assert row["web_vital_name"] == "INP"
     assert row["web_vital_value"] == 122.5
     assert row["web_vital_rating"] == "needs-improvement"
+    assert row["error_type"] == "TypeError"
+    assert row["error_message"] == "Smoke test error"
+    assert row["error_source"] == "app.js"
+    assert row["error_line"] == 10
+    assert row["error_column"] == 20
+    assert row["error_stack_hash"] == "abcd1234"
 
 
 def test_socal_ui_performance_dashboard_queries_bigquery(monkeypatch) -> None:
@@ -291,6 +310,9 @@ def test_socal_ui_performance_dashboard_queries_bigquery(monkeypatch) -> None:
 
         def __init__(self) -> None:
             self.query_text = ""
+
+        def get_table(self, table_id: str):
+            raise ui_app.NotFound("missing table")
 
         def create_table(self, table, *, exists_ok: bool = False):
             return table

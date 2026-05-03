@@ -248,6 +248,9 @@ Current UI behavior:
   browser-safe observability flags without rebuilding static assets.
 - Loads Web Vitals field measurement from the browser and stores those events
   in the same UI performance table.
+- Records uncaught browser errors and unhandled promise rejections in the same
+  telemetry envelope with sanitized error metadata and a stack hash, not raw
+  stack traces.
 - Optionally initializes Grafana Faro Cloud when
   `OPENFIRE_FARO_COLLECTOR_URL` is configured. The same OpenFire-specific map
   timings are exported as Faro custom measurements so the Grafana dashboard can
@@ -330,6 +333,9 @@ UI performance telemetry contract:
   frame wait, rendered point count, zoom, cache hit, and render mode.
 - Web Vitals events use the same session, variant, and app-version envelope and
   record metric name, value, delta, rating, and navigation type.
+- Browser error events use the same envelope and store error type, truncated
+  message/source, line/column, and stack hash so BigQuery remains the durable
+  backup for Grafana's shorter-retention error view.
 - Grafana Faro Cloud is an optional second sink. When enabled, the browser loads
   the Faro Web SDK from the configured CDN URL, sends Faro's automatic frontend
   observability signals to Grafana Cloud, and pushes OpenFire map timings as
@@ -349,6 +355,12 @@ Browser observability runtime configuration:
 | `OPENFIRE_WEB_VITALS_ENABLED` | Enables the Web Vitals browser library. Default: `true`. |
 | `OPENFIRE_FARO_COLLECTOR_URL` | Grafana Cloud Frontend Observability collector URL copied from the Grafana application setup page. When absent, Faro stays disabled. |
 | `OPENFIRE_FARO_ENVIRONMENT` | Grafana environment label, such as `production` or `staging`. |
+
+Programmatic Grafana Cloud reads use `scripts/query_grafana_faro.py`, which
+queries the Loki `/loki/api/v1/query_range` endpoint with
+`GRAFANA_CLOUD_LOKI_URL`, `GRAFANA_CLOUD_LOKI_USER`, and
+`GRAFANA_CLOUD_LOKI_TOKEN` from local environment or the ignored `.env` file.
+The Loki token must be stored as a secret, not as browser config.
 
 | Option | Pros | Cons | Feasibility |
 |---|---|---|---|
