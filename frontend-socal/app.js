@@ -1,5 +1,5 @@
 const config = window.OPENFIRE_SOCAL_CONFIG;
-const canvasRenderer = L.canvas({ padding: 0.35 });
+const LARGE_LAYER_TRANSITION_THRESHOLD = 5000;
 
 const map = L.map("map", {
   zoomControl: true,
@@ -12,6 +12,24 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 }).addTo(map);
 
 map.setMinZoom(config.map.minZoom || 5);
+
+function configureMapPanes() {
+  const paneOrder = [
+    ["riskPane", 410],
+    ["aoiPane", 430],
+    ["labelPane", 610],
+  ];
+
+  paneOrder.forEach(([name, zIndex]) => {
+    const pane = map.createPane(name);
+    pane.style.zIndex = String(zIndex);
+    pane.style.pointerEvents = name === "riskPane" ? "auto" : "none";
+  });
+}
+
+configureMapPanes();
+
+const canvasRenderer = L.canvas({ padding: 0.35, pane: "riskPane" });
 
 const nodes = {
   status: document.getElementById("status-message"),
@@ -44,6 +62,7 @@ const state = {
   cache: new Map(),
   playbackTimer: null,
   playbackLoading: false,
+  riskTransitionId: 0,
 };
 
 function setStatus(message, isError = false) {
@@ -113,17 +132,44 @@ function createLegend() {
   });
 }
 
-function pointStyle(feature) {
+function pointVisualStyle(zoom = map.getZoom()) {
+  if (zoom <= 8) {
+    return {
+      radius: 2.2,
+      weight: 0.6,
+      opacity: 0.5,
+      fillOpacity: 0.34,
+    };
+  }
+  if (zoom <= 9) {
+    return {
+      radius: 2.7,
+      weight: 0.8,
+      opacity: 0.62,
+      fillOpacity: 0.46,
+    };
+  }
+  return {
+    radius: 3.3,
+    weight: 1,
+    opacity: 0.74,
+    fillOpacity: 0.6,
+  };
+}
+
+function pointStyle(feature, opacityScale = 1) {
   const probability = Number(feature?.properties?.risk_probability ?? 0);
   const band = getBand(probability);
+  const visual = pointVisualStyle();
   return {
     renderer: canvasRenderer,
-    radius: 3,
+    pane: "riskPane",
+    radius: visual.radius,
     fillColor: band.color,
     color: band.color,
-    weight: 1,
-    opacity: 0.72,
-    fillOpacity: 0.58,
+    weight: visual.weight,
+    opacity: visual.opacity * opacityScale,
+    fillOpacity: visual.fillOpacity * opacityScale,
   };
 }
 
@@ -223,11 +269,14 @@ function selectDisplayFeatures(features) {
 
 function renderAoi(aoi) {
   const boundaryLayer = L.geoJSON(aoi, {
+    pane: "aoiPane",
     style: {
       color: "#24392f",
-      weight: 2,
+      weight: 2.4,
       fillColor: "#ffffff",
       fillOpacity: 0.08,
+      opacity: 0.9,
+      pane: "aoiPane",
     },
   }).addTo(map);
 
@@ -238,6 +287,7 @@ function renderAoi(aoi) {
     const center = layer.getBounds().getCenter();
     L.marker(center, {
       interactive: false,
+      pane: "labelPane",
       icon: L.divIcon({
         className: "county-label",
         html: `<span>${name}</span>`,
@@ -261,6 +311,7 @@ function buildRiskLayer(features) {
       features,
     },
     {
+      pane: "riskPane",
       pointToLayer(feature, latlng) {
         return L.circleMarker(latlng, pointStyle(feature));
       },
@@ -275,43 +326,93 @@ function buildRiskLayer(features) {
   );
 }
 
-function setLayerOpacity(layer, opacity) {
+function setRiskLayerOpacityScale(layer, opacityScale) {
   layer.eachLayer((child) => {
     if (child.setStyle) {
-      child.setStyle({ opacity, fillOpacity: opacity * 0.8 });
+      child.setStyle(pointStyle(child.feature, opacityScale));
     }
   });
+}
+
+function restyleRiskLayer() {
+  if (state.riskLayer) {
+    setRiskLayerOpacityScale(state.riskLayer, 1);
+  }
+}
+
+function animateRiskLayerOpacity(layer, fromScale, toScale, durationMs, transitionId, onComplete) {
+  const start = window.performance.now();
+
+  function tick(now) {
+    if (transitionId && transitionId !== state.riskTransitionId) {
+      return;
+    }
+
+    const progress = Math.min(1, (now - start) / durationMs);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    const opacityScale = fromScale + ((toScale - fromScale) * eased);
+    setRiskLayerOpacityScale(layer, opacityScale);
+
+    if (progress < 1) {
+      window.requestAnimationFrame(tick);
+      return;
+    }
+
+    if (onComplete) {
+      onComplete();
+    }
+  }
+
+  setRiskLayerOpacityScale(layer, fromScale);
+  window.requestAnimationFrame(tick);
 }
 
 function replaceRiskLayer(features) {
   const previous = state.riskLayer;
   const next = buildRiskLayer(features);
-  setLayerOpacity(next, 0.15);
+  const transitionId = state.riskTransitionId + 1;
+  state.riskTransitionId = transitionId;
+
+  if (features.length > LARGE_LAYER_TRANSITION_THRESHOLD) {
+    setRiskLayerOpacityScale(next, 1);
+    next.addTo(map);
+    state.riskLayer = next;
+    if (previous) {
+      map.removeLayer(previous);
+    }
+    return;
+  }
+
+  setRiskLayerOpacityScale(next, 0.15);
   next.addTo(map);
   state.riskLayer = next;
 
-  window.setTimeout(() => setLayerOpacity(next, 0.72), 20);
+  animateRiskLayerOpacity(next, 0.15, 1, 150, transitionId);
   if (previous) {
-    setLayerOpacity(previous, 0.1);
-    window.setTimeout(() => map.removeLayer(previous), 150);
+    animateRiskLayerOpacity(previous, 1, 0, 150, null, () => {
+      if (map.hasLayer(previous)) {
+        map.removeLayer(previous);
+      }
+    });
   }
 }
 
 function renderActiveSnapshot({ force = false } = {}) {
   const features = state.activeSnapshot?.features || [];
   if (!features.length) {
-    return;
+    return false;
   }
 
   const display = selectDisplayFeatures(features);
   const signature = `${display.mode}:${display.features.length}`;
   if (!force && signature === state.renderSignature) {
-    return;
+    return false;
   }
 
   state.renderSignature = signature;
   state.renderedFeatureCount = display.features.length;
   replaceRiskLayer(display.features);
+  return true;
 }
 
 function normalizeWindows(manifest) {
@@ -575,7 +676,10 @@ function bindControls() {
       return;
     }
     const previousCount = state.renderedFeatureCount;
-    renderActiveSnapshot();
+    const didRender = renderActiveSnapshot();
+    if (!didRender) {
+      restyleRiskLayer();
+    }
     if (state.activeSnapshot && previousCount !== state.renderedFeatureCount) {
       updateMetadata(
         state.manifest,
