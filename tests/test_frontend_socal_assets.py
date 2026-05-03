@@ -57,12 +57,16 @@ def test_socal_ui_has_live_manifest_and_timeline_controls() -> None:
     assert "socal_demo_manifest.json" in config
     assert 'id="timeline-slider"' in html
     assert 'id="playback-toggle"' in html
+    assert 'id="meta-render-mode"' in html
     assert "gs://openfire/predictions/" in app
     assert "config.snapshotCacheSize" in app
     assert "lowZoomPerformance" in config
     assert "selectDisplayFeatures" in app
     assert "geojson_variants" in app
     assert "variantKey" in config
+    assert "activeSnapshotRenderLabel" in app
+    assert "client fallback" in app
+    assert "precomputed" in app
     assert "renderActiveSnapshot" in app
 
 
