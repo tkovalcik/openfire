@@ -20,6 +20,7 @@ const nodes = {
   windowDate: document.getElementById("meta-window-date"),
   modelVersion: document.getElementById("meta-model-version"),
   featureCount: document.getElementById("meta-feature-count"),
+  renderMode: document.getElementById("meta-render-mode"),
   countyCount: document.getElementById("meta-county-count"),
   slider: document.getElementById("timeline-slider"),
   timelineDate: document.getElementById("timeline-date"),
@@ -34,6 +35,7 @@ const state = {
   activeSnapshot: null,
   activeSnapshotUri: "",
   activeSnapshotPrecomputed: false,
+  activeSnapshotRenderLabel: "Loading...",
   riskLayer: null,
   renderSignature: "",
   renderedFeatureCount: 0,
@@ -350,15 +352,24 @@ function selectSnapshotSource(windowEntry) {
   const tier = activeLowZoomTier();
   const variantKey = tier?.variantKey;
   const variant = variantKey ? windowEntry.geojson_variants?.[variantKey] : null;
+  const tierLabel = variantKey === "low"
+    ? "z8"
+    : variantKey === "medium"
+      ? "z9"
+      : tier
+        ? `z<=${tier.maxZoom || 7}`
+        : "full";
   if (variant?.geojson_uri) {
     return {
       uri: variant.geojson_uri,
       isPrecomputed: true,
+      renderLabel: `${tierLabel} precomputed`,
     };
   }
   return {
     uri: windowEntry.geojson_uri,
     isPrecomputed: false,
+    renderLabel: tier ? `${tierLabel} client fallback` : "full snapshot",
   };
 }
 
@@ -400,6 +411,7 @@ function updateMetadata(manifest, aoi, riskGeojson, windowEntry) {
   nodes.windowDate.textContent = windowEntry.window_start_date || manifest.latest_window_start_date || "Unavailable";
   nodes.modelVersion.textContent = windowEntry.model_version || manifest.model_version || "Unavailable";
   nodes.featureCount.textContent = `${featureCount.toLocaleString()} (${riskCount.toLocaleString()} elevated${renderedSuffix})`;
+  nodes.renderMode.textContent = state.activeSnapshotRenderLabel;
   nodes.countyCount.textContent = `${aoi.features?.length || 0}`;
   nodes.source.textContent = manifest.source || "GCS prediction manifest";
 }
@@ -451,6 +463,7 @@ async function setActiveIndex(index, { prefetch = true } = {}) {
     state.activeSnapshot = riskGeojson;
     state.activeSnapshotUri = resolveAssetUrl(source.uri);
     state.activeSnapshotPrecomputed = source.isPrecomputed;
+    state.activeSnapshotRenderLabel = source.renderLabel;
     state.renderSignature = "";
     renderActiveSnapshot({ force: true });
     updateMetadata(state.manifest, state.aoi, riskGeojson, windowEntry);
@@ -458,7 +471,7 @@ async function setActiveIndex(index, { prefetch = true } = {}) {
     const renderedSuffix = renderedCount < riskGeojson.features.length
       ? ` Rendering ${renderedCount.toLocaleString()} at this zoom.`
       : "";
-    setStatus(`Loaded ${riskGeojson.features.length.toLocaleString()} risk features.${renderedSuffix}`);
+    setStatus(`Loaded ${riskGeojson.features.length.toLocaleString()} risk features via ${source.renderLabel}.${renderedSuffix}`);
     if (prefetch) {
       prefetchSnapshots(boundedIndex);
     }
