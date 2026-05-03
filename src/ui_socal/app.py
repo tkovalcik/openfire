@@ -308,19 +308,25 @@ def _format_metric(value: object | None, suffix: str = " ms") -> str:
     return f"{value}{suffix}"
 
 
-def _ui_perf_dashboard_html(rows: list[dict[str, object | None]], lookback_hours: int) -> str:
+def _html_text(value: object | None, default: str = "unknown") -> str:
+    if value is None or value == "":
+        value = default
+    return escape(str(value), quote=True)
+
+
+def _ui_perf_dashboard_html(rows: list[dict[str, object | None]], lookback_hours_text: str) -> str:
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     table_rows = "\n".join(
         "<tr>"
-        f"<td>{escape(str(row.get('ui_variant') or 'unknown'))}</td>"
-        f"<td>{escape(str(row.get('event_name') or 'unknown'))}</td>"
-        f"<td>{escape(str(row.get('render_mode') or 'unknown'))}</td>"
+        f"<td>{_html_text(row.get('ui_variant'))}</td>"
+        f"<td>{_html_text(row.get('event_name'))}</td>"
+        f"<td>{_html_text(row.get('render_mode'))}</td>"
         f"<td>{int(row.get('sample_count') or 0):,}</td>"
-        f"<td>{escape(_format_metric(row.get('p95_paint_ms')))}</td>"
-        f"<td>{escape(_format_metric(row.get('p95_snapshot_load_ms')))}</td>"
-        f"<td>{escape(_format_metric(row.get('p95_render_ms')))}</td>"
-        f"<td>{escape(_format_metric(row.get('p95_frame_wait_ms')))}</td>"
-        f"<td>{escape(_format_metric(row.get('avg_rendered_features'), ' pts'))}</td>"
+        f"<td>{_html_text(_format_metric(row.get('p95_paint_ms')))}</td>"
+        f"<td>{_html_text(_format_metric(row.get('p95_snapshot_load_ms')))}</td>"
+        f"<td>{_html_text(_format_metric(row.get('p95_render_ms')))}</td>"
+        f"<td>{_html_text(_format_metric(row.get('p95_frame_wait_ms')))}</td>"
+        f"<td>{_html_text(_format_metric(row.get('avg_rendered_features'), ' pts'))}</td>"
         "</tr>"
         for row in rows
     )
@@ -350,7 +356,7 @@ def _ui_perf_dashboard_html(rows: list[dict[str, object | None]], lookback_hours
     <main>
       <h1>OpenFire UI Performance</h1>
       <div class="meta">
-        <span>Lookback: {lookback_hours} hours</span>
+        <span>Lookback: {lookback_hours_text} hours</span>
         <span>Generated: {generated_at}</span>
         <span>Grouped by UI variant, event, and render mode</span>
       </div>
@@ -454,10 +460,11 @@ def ui_performance_dashboard(
     lookback_hours: int = Query(default=24, ge=1, le=720),
     limit: int = Query(default=50, ge=1, le=500),
 ) -> HTMLResponse:
+    lookback_hours_text = escape(str(lookback_hours), quote=True)
     if not UI_PERF_ENABLED:
-        return HTMLResponse(_ui_perf_dashboard_html([], lookback_hours=lookback_hours))
+        return HTMLResponse(_ui_perf_dashboard_html([], lookback_hours_text=lookback_hours_text))
     rows = _ui_perf_summary_rows(lookback_hours=lookback_hours, limit=limit)
-    return HTMLResponse(_ui_perf_dashboard_html(rows, lookback_hours=lookback_hours))
+    return HTMLResponse(_ui_perf_dashboard_html(rows, lookback_hours_text=lookback_hours_text))
 
 
 @app.get("/data/{object_name:path}", response_model=None)

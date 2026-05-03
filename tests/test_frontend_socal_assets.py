@@ -93,6 +93,8 @@ def test_socal_ui_has_live_manifest_and_timeline_controls() -> None:
     assert "schedulePerformanceSample" in app
     assert "paintReadyMs" in app
     assert "sessionStorage" in app
+    assert "crypto.getRandomValues" in app
+    assert "Math.random" not in app
     assert "performance-grid" in styles
     assert "panel-link" in styles
     assert "height: 100vh;" in styles
@@ -338,6 +340,26 @@ def test_socal_ui_performance_dashboard_queries_bigquery(monkeypatch) -> None:
     assert "OpenFire UI Performance" in response.text
     assert "leaflet-canvas" in response.text
     assert "1,440.5 ms" in response.text
+
+
+def test_socal_ui_performance_dashboard_escapes_html_text() -> None:
+    html = ui_app._ui_perf_dashboard_html(
+        [
+            {
+                "ui_variant": '<script>alert("variant")</script>',
+                "event_name": '<img src=x onerror=alert("event")>',
+                "render_mode": 'mode "quoted"',
+                "sample_count": 1,
+            }
+        ],
+        lookback_hours_text=ui_app.escape("<24>", quote=True),
+    )
+
+    assert '<script>alert("variant")</script>' not in html
+    assert '<img src=x onerror=alert("event")>' not in html
+    assert "&lt;script&gt;alert(&quot;variant&quot;)&lt;/script&gt;" in html
+    assert "&lt;img src=x onerror=alert(&quot;event&quot;)&gt;" in html
+    assert "Lookback: &lt;24&gt; hours" in html
 
 
 def test_socal_ui_data_proxy_preserves_gzip_encoding(monkeypatch) -> None:
