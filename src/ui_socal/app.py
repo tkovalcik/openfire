@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, Response
+from google.api_core.exceptions import NotFound
 from google.cloud import bigquery, storage
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -73,6 +74,12 @@ class UIPerformanceEvent(BaseModel):
     web_vital_delta: float | None = Field(default=None)
     web_vital_rating: str | None = Field(default=None, max_length=32)
     web_vital_navigation_type: str | None = Field(default=None, max_length=64)
+    error_type: str | None = Field(default=None, max_length=128)
+    error_message: str | None = Field(default=None, max_length=512)
+    error_source: str | None = Field(default=None, max_length=2048)
+    error_line: int | None = Field(default=None, ge=0)
+    error_column: int | None = Field(default=None, ge=0)
+    error_stack_hash: str | None = Field(default=None, max_length=64)
 
 
 class UIPerformancePayload(BaseModel):
@@ -152,6 +159,12 @@ def _ui_perf_schema() -> list[bigquery.SchemaField]:
         bigquery.SchemaField("web_vital_delta", "FLOAT64"),
         bigquery.SchemaField("web_vital_rating", "STRING"),
         bigquery.SchemaField("web_vital_navigation_type", "STRING"),
+        bigquery.SchemaField("error_type", "STRING"),
+        bigquery.SchemaField("error_message", "STRING"),
+        bigquery.SchemaField("error_source", "STRING"),
+        bigquery.SchemaField("error_line", "INT64"),
+        bigquery.SchemaField("error_column", "INT64"),
+        bigquery.SchemaField("error_stack_hash", "STRING"),
     ]
 
 
@@ -161,10 +174,20 @@ def _ensure_ui_perf_table(client: bigquery.Client) -> str:
     if _ui_perf_table_ready:
         return table_id
 
-    table = bigquery.Table(table_id, schema=_ui_perf_schema())
-    table.time_partitioning = bigquery.TimePartitioning(field="received_at")
-    table.clustering_fields = ["ui_variant", "event_name", "window_start_date", "render_mode"]
-    client.create_table(table, exists_ok=True)
+    schema = _ui_perf_schema()
+    try:
+        table = client.get_table(table_id)
+    except NotFound:
+        table = bigquery.Table(table_id, schema=schema)
+        table.time_partitioning = bigquery.TimePartitioning(field="received_at")
+        table.clustering_fields = ["ui_variant", "event_name", "window_start_date", "render_mode"]
+        client.create_table(table, exists_ok=True)
+    else:
+        existing_fields = {field.name for field in table.schema}
+        missing_fields = [field for field in schema if field.name not in existing_fields]
+        if missing_fields:
+            table.schema = list(table.schema) + missing_fields
+            client.update_table(table, ["schema"])
     _ui_perf_table_ready = True
     return table_id
 
@@ -233,6 +256,12 @@ def _ui_perf_row(payload: UIPerformancePayload, event: UIPerformanceEvent) -> di
         "web_vital_delta": _finite_float(event.web_vital_delta),
         "web_vital_rating": event.web_vital_rating,
         "web_vital_navigation_type": event.web_vital_navigation_type,
+        "error_type": event.error_type,
+        "error_message": event.error_message,
+        "error_source": event.error_source,
+        "error_line": _finite_int(event.error_line),
+        "error_column": _finite_int(event.error_column),
+        "error_stack_hash": event.error_stack_hash,
     }
 
 
