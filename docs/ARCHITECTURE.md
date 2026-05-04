@@ -228,6 +228,15 @@ files and proxies `/data/*` to private prediction objects in GCS using the
 runtime service account, so the browser does not need bucket CORS or public
 GCS reads.
 
+`frontend-socal-deckgl/` is a standalone deck.gl prototype static root. It
+reuses the same FastAPI static/proxy service code, manifest contract, `/data/*`
+proxy, timeline model, and UI telemetry envelope, but it is packaged with
+`docker/Dockerfile.ui_socal_deckgl` and deploys to the separate
+`openfire-ui-socal-deckgl` Cloud Run service through a manual workflow. Its
+runtime `OPENFIRE_UI_VARIANT` is `deckgl-scatterplot`, so BigQuery and Faro can
+compare it side by side with production `leaflet-canvas` without replacing the
+Leaflet service.
+
 Current UI behavior:
 
 - Reads `/data/manifest.json`.
@@ -258,6 +267,24 @@ Current UI behavior:
 - Temporarily excludes `2025-12-23` and `2025-12-28` from the timeline while
   those low-count historical snapshots are investigated.
 
+For read-only UI testing against the real inference dataset, run the same
+FastAPI UI service with telemetry disabled and the live manifest enabled:
+
+```bash
+OPENFIRE_SOCAL_STATIC_ROOT=frontend-socal-deckgl \
+OPENFIRE_UI_VARIANT=deckgl-scatterplot-readonly \
+OPENFIRE_UI_PERF_ENABLED=false \
+OPENFIRE_WEB_VITALS_ENABLED=false \
+OPENFIRE_FARO_ENABLED=false \
+OPENFIRE_USE_LIVE_MANIFEST=true \
+uvicorn src.ui_socal.app:app --host 127.0.0.1 --port 8090
+```
+
+That mode still reads `gs://openfire/predictions/manifest.json` and referenced
+snapshots through `/data/*`, but it does not emit UI performance, Web Vitals, or
+Faro telemetry. The checked-in three-window demo manifest should remain only as
+an offline fallback and fixture for deterministic unit tests.
+
 ---
 
 ## Cloud Infrastructure
@@ -268,6 +295,7 @@ Current UI behavior:
 | Cloud Run Job `openfire-train` | XGBoost training | 8 vCPU / 32 GiB, `max-retries=0`. |
 | Cloud Run Service `openfire-api` | Existing serving API | Managed by `cd.yml`. |
 | Cloud Run Service `openfire-ui-socal` | SoCal prediction viewer and GCS proxy | 1 vCPU / 256 MiB, scale to zero, managed by `ui_socal.yml`. |
+| Cloud Run Service `openfire-ui-socal-deckgl` | Standalone deck.gl UI prototype and GCS proxy | 1 vCPU / 512 MiB, scale to zero, manual blue/green prototype workflow. |
 | Cloud Run Service `openfire-monitoring` | Evidently report dashboard | Read-only GCS report browser, managed by `monitoring.yml`. |
 | Cloud Scheduler `openfire-inference-daily` | Daily inference trigger | Runs `openfire-inference` with baked `--mode latest` args. |
 | MLflow server | Experiment tracking and registry | Registry name: `openfire-gold`. |

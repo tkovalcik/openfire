@@ -64,10 +64,12 @@ def test_socal_ui_has_live_manifest_and_timeline_controls() -> None:
     assert 'id="perf-latest"' in html
     assert 'href="/metrics/ui/dashboard"' in html
     assert 'src="./runtime-config.js"' in html
+    assert "OPENFIRE_UI_PERF_ENABLED" in config
     assert html.index("Snapshot") < html.index("Time") < html.index("Legend") < html.index("Performance") < html.index("Source")
     assert 'data-collapsible-panel' in html
     assert "bindCollapsiblePanels" in app
     assert "performanceTracking" in config
+    assert "enabled: uiPerformanceEnabled" in config
     assert 'uiVariant: window.OPENFIRE_UI_VARIANT || "leaflet-canvas"' in config
     assert 'telemetryEndpoint: "/metrics/ui/performance"' in config
     assert 'storageKey: "openfire-socal-ui-performance"' in config
@@ -135,6 +137,49 @@ def test_socal_ui_has_live_manifest_and_timeline_controls() -> None:
     assert '"#2f6fba"' not in config
 
 
+def test_socal_deckgl_prototype_is_isolated_static_variant() -> None:
+    deckgl_root = ROOT / "frontend-socal-deckgl"
+    config = (deckgl_root / "config.js").read_text(encoding="utf-8")
+    html = (deckgl_root / "index.html").read_text(encoding="utf-8")
+    app = (deckgl_root / "app.js").read_text(encoding="utf-8")
+    styles = (deckgl_root / "styles.css").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "docker" / "Dockerfile.ui_socal_deckgl").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "ui_socal_deckgl.yml").read_text(encoding="utf-8")
+    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+    assert (deckgl_root / "data" / "aoi_counties.geojson").exists()
+    assert not (deckgl_root / "data" / "socal_20240726_risk.geojson").exists()
+    assert "../frontend-socal/data/socal_20240726_risk.geojson" in (
+        deckgl_root / "data" / "socal_demo_manifest.json"
+    ).read_text(encoding="utf-8")
+    assert 'uiVariant: window.OPENFIRE_UI_VARIANT || "deckgl-scatterplot"' in config
+    assert 'storageKey: "openfire-socal-deckgl-performance"' in config
+    assert "OPENFIRE_UI_PERF_ENABLED" in config
+    assert "enabled: uiPerformanceEnabled" in config
+    assert "/data/manifest.json" in config
+    assert 'telemetryEndpoint: "/metrics/ui/performance"' in config
+    assert "https://unpkg.com/deck.gl@^9.0.0/dist.min.js" in html
+    assert "deckApi.Deck" in app
+    assert "deckApi.MapView" in app
+    assert "deckApi.ScatterplotLayer" in app
+    assert "DeckRiskLayer" in app
+    assert "DECK_RENDERER_LABEL" in app
+    assert "L.circleMarker" not in app
+    assert "canvasRenderer" not in app
+    assert ".deckgl-risk-layer" in styles
+    assert ".deckgl-risk-tooltip" in styles
+    assert "OPENFIRE_SOCAL_STATIC_ROOT=/app/frontend-socal-deckgl" in dockerfile
+    assert "OPENFIRE_UI_VARIANT=deckgl-scatterplot" in dockerfile
+    assert "openfire-ui-socal-deckgl" in workflow
+    assert "docker/Dockerfile.ui_socal_deckgl" in workflow
+    assert '"OPENFIRE_UI_VARIANT=deckgl-scatterplot"' in workflow
+    assert "frontend-socal-deckgl/data/*" in dockerignore
+    assert "!frontend-socal-deckgl/data/aoi_counties.geojson" in dockerignore
+    assert "!frontend-socal-deckgl/data/aoi_counties.geojson" in gitignore
+    assert "!frontend-socal-deckgl/data/socal_demo_manifest.json" in gitignore
+
+
 def test_socal_ui_service_serves_static_files(monkeypatch) -> None:
     monkeypatch.setattr(ui_app, "STATIC_ROOT", ROOT / "frontend-socal")
     client = TestClient(ui_app.app)
@@ -145,9 +190,22 @@ def test_socal_ui_service_serves_static_files(monkeypatch) -> None:
     assert "OpenFire SoCal AOI" in response.text
 
 
+def test_socal_ui_service_can_serve_deckgl_static_root(monkeypatch) -> None:
+    monkeypatch.setattr(ui_app, "STATIC_ROOT", ROOT / "frontend-socal-deckgl")
+    client = TestClient(ui_app.app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "OpenFire SoCal AOI deck.gl" in response.text
+    assert "deck.gl@^9.0.0" in response.text
+
+
 def test_socal_ui_runtime_config_exposes_observability_flags(monkeypatch) -> None:
     monkeypatch.setattr(ui_app, "UI_VARIANT", "deckgl-prototype")
     monkeypatch.setattr(ui_app, "UI_VERSION", "test-sha")
+    monkeypatch.setattr(ui_app, "UI_PERF_ENABLED", False)
+    monkeypatch.setattr(ui_app, "USE_LIVE_MANIFEST", False)
     monkeypatch.setattr(ui_app, "WEB_VITALS_ENABLED", True)
     monkeypatch.setattr(ui_app, "FARO_ENABLED", True)
     monkeypatch.setattr(ui_app, "FARO_COLLECTOR_URL", "https://faro.example.test/collect/app-key")
@@ -161,6 +219,8 @@ def test_socal_ui_runtime_config_exposes_observability_flags(monkeypatch) -> Non
     assert "application/javascript" in response.headers["content-type"]
     assert '"OPENFIRE_UI_VARIANT":"deckgl-prototype"' in response.text
     assert '"OPENFIRE_UI_VERSION":"test-sha"' in response.text
+    assert '"OPENFIRE_UI_PERF_ENABLED":false' in response.text
+    assert '"OPENFIRE_USE_LIVE_MANIFEST":false' in response.text
     assert '"OPENFIRE_WEB_VITALS_ENABLED":true' in response.text
     assert '"OPENFIRE_FARO_ENABLED":true' in response.text
     assert '"OPENFIRE_FARO_COLLECTOR_URL":"https://faro.example.test/collect/app-key"' in response.text
