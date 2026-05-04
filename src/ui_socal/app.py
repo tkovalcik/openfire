@@ -26,6 +26,7 @@ UI_PERF_BQ_TABLE = os.getenv("OPENFIRE_UI_PERF_BQ_TABLE", "ui_performance_events
 UI_PERF_MAX_EVENTS = int(os.getenv("OPENFIRE_UI_PERF_MAX_EVENTS", "50"))
 UI_VARIANT = os.getenv("OPENFIRE_UI_VARIANT", "leaflet-canvas")
 UI_VERSION = os.getenv("OPENFIRE_UI_VERSION", "socal-ui")
+USE_LIVE_MANIFEST = os.getenv("OPENFIRE_USE_LIVE_MANIFEST", "true").lower() in {"1", "true", "yes"}
 WEB_VITALS_ENABLED = os.getenv("OPENFIRE_WEB_VITALS_ENABLED", "true").lower() in {"1", "true", "yes"}
 WEB_VITALS_SCRIPT_URL = os.getenv(
     "OPENFIRE_WEB_VITALS_SCRIPT_URL",
@@ -402,6 +403,8 @@ def runtime_config() -> Response:
     runtime_values = {
         "OPENFIRE_UI_VARIANT": UI_VARIANT,
         "OPENFIRE_UI_VERSION": UI_VERSION,
+        "OPENFIRE_UI_PERF_ENABLED": UI_PERF_ENABLED,
+        "OPENFIRE_USE_LIVE_MANIFEST": USE_LIVE_MANIFEST,
         "OPENFIRE_WEB_VITALS_ENABLED": WEB_VITALS_ENABLED,
         "OPENFIRE_WEB_VITALS_SCRIPT_URL": WEB_VITALS_SCRIPT_URL,
         "OPENFIRE_FARO_ENABLED": FARO_ENABLED and bool(FARO_COLLECTOR_URL),

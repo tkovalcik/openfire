@@ -11,8 +11,8 @@
     snapshotCacheSize: 8,
     performanceTracking: {
       enabled: uiPerformanceEnabled,
-      uiVariant: window.OPENFIRE_UI_VARIANT || "leaflet-canvas",
-      appVersion: window.OPENFIRE_UI_VERSION || "socal-ui",
+      uiVariant: window.OPENFIRE_UI_VARIANT || "deckgl-scatterplot",
+      appVersion: window.OPENFIRE_UI_VERSION || "socal-ui-deckgl",
       telemetryEndpoint: "/metrics/ui/performance",
       telemetryFlushIntervalMs: 10000,
       telemetryBatchSize: 20,
@@ -22,7 +22,7 @@
       slowSnapshotLoadMs: 1500,
       longTaskMs: 50,
       logSamples: window.OPENFIRE_PERF_LOG_SAMPLES ?? false,
-      storageKey: "openfire-socal-ui-performance",
+      storageKey: "openfire-socal-deckgl-performance",
       webVitals: {
         enabled: window.OPENFIRE_WEB_VITALS_ENABLED ?? true,
         scriptUrl: window.OPENFIRE_WEB_VITALS_SCRIPT_URL || "https://unpkg.com/web-vitals@5/dist/web-vitals.iife.js",
