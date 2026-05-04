@@ -6,6 +6,16 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full data-flow diagra
 
 ---
 
+## Demo Video
+
+A 2:37 walkthrough of the OpenFire SoCal UI and pipeline.
+
+https://github.com/tkovalcik/openfire/raw/dev/docs/demo.mp4
+
+If the inline player above does not load, [download `docs/demo.mp4`](docs/demo.mp4) directly.
+
+---
+
 ## ML pipeline — quickstart
 
 ### Prerequisites
