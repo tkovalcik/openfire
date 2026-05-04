@@ -5,7 +5,7 @@
     manifestUrl: useLiveManifest ? "/data/manifest.json" : "./data/socal_demo_manifest.json",
     dataProxyPrefix: "/data/",
     demoManifestUrl: "./data/socal_demo_manifest.json",
-    excludedWindowStartDates: ["2025-12-23", "2025-12-28"],
+    excludedWindowStartDates: ["2025-12-23"],
     playbackIntervalMs: 750,
     snapshotCacheSize: 8,
     performanceTracking: {
