@@ -1,0 +1,5 @@
+# Dev/test-only dependencies. Not installed into production images.
+# Install on top of docker/requirements.api.txt for local development:
+#   pip install -r docker/requirements.api.txt -r docker/requirements.dev.txt
+httpx==0.27.2
+pytest==8.3.4
