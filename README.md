@@ -10,6 +10,14 @@ assessment. The repository is intentionally opinionated:
   for development
 - local disk is temporary cache only, never the source of truth for team workflows
 
+## Demo Video
+
+A 2:37 walkthrough of the OpenFire SoCal UI and pipeline.
+
+https://github.com/user-attachments/assets/c3a2babd-a3c0-4afc-bcdd-f74ad5f49a5f
+
+If the inline player does not load, [download `docs/demo.mp4`](docs/demo.mp4) directly.
+
 ## Recommended Storage Architecture
 
 Primary approach:
