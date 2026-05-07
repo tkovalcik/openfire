@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 from html import escape
 import json
 import math
@@ -9,7 +10,7 @@ import mimetypes
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from google.api_core.exceptions import NotFound
 from google.cloud import bigquery, storage
@@ -24,6 +25,8 @@ UI_PERF_BQ_PROJECT = os.getenv("OPENFIRE_UI_PERF_BQ_PROJECT") or os.getenv("GOOG
 UI_PERF_BQ_DATASET = os.getenv("OPENFIRE_UI_PERF_BQ_DATASET", "openfire_features")
 UI_PERF_BQ_TABLE = os.getenv("OPENFIRE_UI_PERF_BQ_TABLE", "ui_performance_events")
 UI_PERF_MAX_EVENTS = int(os.getenv("OPENFIRE_UI_PERF_MAX_EVENTS", "50"))
+SUBS_BQ_DATASET = os.getenv("OPENFIRE_SUBS_BQ_DATASET", UI_PERF_BQ_DATASET)
+SUBS_BQ_TABLE = os.getenv("OPENFIRE_SUBS_BQ_TABLE", "ui_subscriptions")
 UI_VARIANT = os.getenv("OPENFIRE_UI_VARIANT", "leaflet-canvas")
 UI_VERSION = os.getenv("OPENFIRE_UI_VERSION", "socal-ui")
 USE_LIVE_MANIFEST = os.getenv("OPENFIRE_USE_LIVE_MANIFEST", "true").lower() in {"1", "true", "yes"}
@@ -46,6 +49,7 @@ app = FastAPI(title="OpenFire SoCal UI", docs_url=None, redoc_url=None)
 _storage_client: storage.Client | None = None
 _bq_client: bigquery.Client | None = None
 _ui_perf_table_ready = False
+_subs_table_ready = False
 
 
 class UIPerformanceEvent(BaseModel):
@@ -81,6 +85,23 @@ class UIPerformanceEvent(BaseModel):
     error_line: int | None = Field(default=None, ge=0)
     error_column: int | None = Field(default=None, ge=0)
     error_stack_hash: str | None = Field(default=None, max_length=64)
+
+
+class SubscriptionRequest(BaseModel):
+    """Capture-only subscription payload from the SoCal UI hero form.
+
+    No emails are sent yet — rows land in `openfire_features.ui_subscriptions`
+    for downstream processing. See docs (sebdevUI branch) for plan.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+    email: str = Field(
+        min_length=5,
+        max_length=254,
+        pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+    )
+    zip: str = Field(pattern=r"^\d{5}$")
+    risk_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class UIPerformancePayload(BaseModel):
@@ -191,6 +212,45 @@ def _ensure_ui_perf_table(client: bigquery.Client) -> str:
             client.update_table(table, ["schema"])
     _ui_perf_table_ready = True
     return table_id
+
+
+def _subs_table_id(client: bigquery.Client) -> str:
+    project = UI_PERF_BQ_PROJECT or client.project
+    return f"{project}.{SUBS_BQ_DATASET}.{SUBS_BQ_TABLE}"
+
+
+def _subs_schema() -> list[bigquery.SchemaField]:
+    return [
+        bigquery.SchemaField("created_at", "TIMESTAMP", mode="REQUIRED"),
+        bigquery.SchemaField("email", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("zip", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("risk_threshold", "FLOAT64"),
+        bigquery.SchemaField("source_ip_hash", "STRING"),
+        bigquery.SchemaField("user_agent", "STRING"),
+        bigquery.SchemaField("app_version", "STRING"),
+    ]
+
+
+def _ensure_subs_table(client: bigquery.Client) -> str:
+    global _subs_table_ready
+    table_id = _subs_table_id(client)
+    if _subs_table_ready:
+        return table_id
+    try:
+        client.get_table(table_id)
+    except NotFound:
+        table = bigquery.Table(table_id, schema=_subs_schema())
+        table.time_partitioning = bigquery.TimePartitioning(field="created_at")
+        table.clustering_fields = ["zip", "email"]
+        client.create_table(table, exists_ok=True)
+    _subs_table_ready = True
+    return table_id
+
+
+def _hash_client_ip(ip: str | None) -> str | None:
+    if not ip:
+        return None
+    return hashlib.sha256(ip.encode("utf-8")).hexdigest()[:32]
 
 
 def _finite_float(value: float | None) -> float | None:
@@ -499,6 +559,27 @@ def data_proxy(object_name: str):
     if content_encoding:
         headers["Content-Encoding"] = content_encoding
     return Response(content=payload, media_type=content_type, headers=headers)
+
+
+@app.post("/api/subscriptions")
+def create_subscription(payload: SubscriptionRequest, request: Request) -> dict[str, object]:
+    """Capture an alert subscription. Writes one row to BigQuery; no email sent."""
+    client = _bigquery_client()
+    table_id = _ensure_subs_table(client)
+    client_host = request.client.host if request.client else None
+    row = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "email": payload.email.lower().strip(),
+        "zip": payload.zip,
+        "risk_threshold": payload.risk_threshold,
+        "source_ip_hash": _hash_client_ip(client_host),
+        "user_agent": (request.headers.get("user-agent") or "")[:512] or None,
+        "app_version": UI_VERSION,
+    }
+    errors = client.insert_rows_json(table_id, [row])
+    if errors:
+        raise HTTPException(status_code=503, detail="Failed to persist subscription")
+    return {"status": "ok"}
 
 
 @app.get("/{path:path}")
