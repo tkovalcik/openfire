@@ -45,6 +45,17 @@ on:
         description: Optional override for the GCP region
         required: false
         type: string
+  push:
+    # Auto-redeploy when inference code, DDL, or the inference image layer changes
+    # on dev. Build + deploy only — execution is left to the daily Cloud Scheduler
+    # tick so a merge doesn't block on a 10-min inference run. The deploy mode
+    # defaults to "latest" (matches Scheduler behavior).
+    branches: [dev]
+    paths:
+      - 'src/pipelines/**'
+      - 'data_pipelines/07_*'
+      - 'docker/Dockerfile.inference'
+      - 'docker/requirements.inference.txt'
 
 permissions:
   contents: read
@@ -143,9 +154,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          # On push events `inputs.*` are empty; default to "latest".
+          MODE="${{ inputs.mode }}"
+          if [[ -z "${MODE}" ]]; then
+            MODE="latest"
+          fi
+
           INFERENCE_ARGS=(
             python -m src.pipelines.run_inference_pipeline
-            --mode "${{ inputs.mode }}"
+            --mode "${MODE}"
           )
 
           if [[ -n "${{ inputs.start }}" ]]; then
@@ -166,6 +183,7 @@ jobs:
 
           # gcloud --args expects comma-separated values
           ARGS_CSV="$(IFS=,; echo "${INFERENCE_ARGS[*]}")"
+          echo "mode=${MODE}" >> "${GITHUB_OUTPUT}"
           echo "args_csv=${ARGS_CSV}" >> "${GITHUB_OUTPUT}"
 
       - name: Create or update Cloud Run Job
@@ -204,6 +222,9 @@ jobs:
           fi
 
       - name: Execute inference job
+        # Skip on push: build + deploy only, let the next 08:00 UTC Cloud Scheduler
+        # tick run inference. Manual workflow_dispatch still executes immediately.
+        if: github.event_name != 'push'
         shell: bash
         run: |
           set -euo pipefail
@@ -220,9 +241,13 @@ jobs:
           {
             echo "### OpenFire Inference"
             echo ""
+            echo "- Trigger: \`${{ github.event_name }}\`"
             echo "- Image: \`${IMAGE_URI}\`"
             echo "- Job: \`${CLOUD_RUN_INFERENCE_JOB}\`"
-            echo "- Mode: \`${{ inputs.mode }}\`"
+            echo "- Mode: \`${{ steps.args.outputs.mode }}\`"
+            if [[ "${{ github.event_name }}" == "push" ]]; then
+              echo "- Execution: **deferred** (Cloud Scheduler will run at 08:00 UTC)"
+            fi
             if [[ -n "${{ inputs.start }}" ]]; then
               echo "- Start: \`${{ inputs.start }}\`"
             fi
@@ -233,6 +258,6 @@ jobs:
               echo "- Date: \`${{ inputs.date }}\`"
             fi
             if [[ "${{ inputs.dry_run }}" == "true" ]]; then
-              echo "- Mode: **dry run**"
+              echo "- Dry run: **true**"
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
