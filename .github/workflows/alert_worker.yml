@@ -13,6 +13,26 @@ on:
         required: true
         default: false
         type: boolean
+      manage_scheduler:
+        description: Create or update the Cloud Scheduler trigger
+        required: true
+        default: false
+        type: boolean
+      scheduler_job_name:
+        description: Cloud Scheduler job name
+        required: true
+        default: openfire-alert-worker-daily
+        type: string
+      schedule:
+        description: Cron schedule for the alert worker
+        required: true
+        default: "0 16 * * *"
+        type: string
+      time_zone:
+        description: Cloud Scheduler time zone
+        required: true
+        default: Etc/UTC
+        type: string
 
 env:
   GCP_PROJECT: msds603-mlops-project
@@ -149,6 +169,34 @@ jobs:
             gcloud run jobs create "${{ env.JOB_NAME }}" "${JOB_ARGS[@]}"
           fi
 
+      - name: Create or update Cloud Scheduler trigger
+        if: ${{ inputs.manage_scheduler }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SCHEDULER_URI="https://${{ env.REGION }}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${{ env.GCP_PROJECT }}/jobs/${{ env.JOB_NAME }}:run"
+          SCHEDULER_ARGS=(
+            "--project=${{ env.GCP_PROJECT }}"
+            "--location=${{ env.REGION }}"
+            "--schedule=${{ inputs.schedule }}"
+            "--time-zone=${{ inputs.time_zone }}"
+            "--uri=${SCHEDULER_URI}"
+            "--http-method=POST"
+            "--message-body={}"
+            "--headers=Content-Type=application/json"
+            "--oauth-service-account-email=${{ env.SERVICE_ACCOUNT }}"
+            "--oauth-token-scope=https://www.googleapis.com/auth/cloud-platform"
+          )
+
+          if gcloud scheduler jobs describe "${{ inputs.scheduler_job_name }}" \
+               --project="${{ env.GCP_PROJECT }}" \
+               --location="${{ env.REGION }}" \
+               &>/dev/null; then
+            gcloud scheduler jobs update http "${{ inputs.scheduler_job_name }}" "${SCHEDULER_ARGS[@]}"
+          else
+            gcloud scheduler jobs create http "${{ inputs.scheduler_job_name }}" "${SCHEDULER_ARGS[@]}"
+          fi
+
       - name: Execute alert worker job
         if: ${{ inputs.execute_job }}
         shell: bash
@@ -170,4 +218,9 @@ jobs:
             echo "- Job: \`${{ env.JOB_NAME }}\`"
             echo "- Execute job: \`${{ inputs.execute_job }}\`"
             echo "- Send real alerts: \`${{ inputs.send }}\`"
+            echo "- Manage scheduler: \`${{ inputs.manage_scheduler }}\`"
+            if [[ "${{ inputs.manage_scheduler }}" == "true" ]]; then
+              echo "- Scheduler: \`${{ inputs.scheduler_job_name }}\`"
+              echo "- Schedule: \`${{ inputs.schedule }}\`"
+            fi
           } >> "${GITHUB_STEP_SUMMARY}"
