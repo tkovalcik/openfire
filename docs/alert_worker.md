@@ -47,6 +47,41 @@ longitude FLOAT64
 If either table is empty, the worker exits successfully and emits zero alert
 candidates.
 
+## Prepare ZIP centroids
+
+Validate a local ZIP centroid CSV or JSON before writing:
+
+```bash
+.venv/bin/python -m src.ui_socal.zip_centroids \
+  --source-csv path/to/zip_centroids.csv
+```
+
+Expected CSV columns:
+
+```text
+zip,latitude,longitude
+```
+
+JSON can use either supported worker fixture shape:
+
+```json
+{"90001": {"latitude": 34.01, "longitude": -118.01}}
+```
+
+or:
+
+```json
+[{"zip": "90001", "latitude": 34.01, "longitude": -118.01}]
+```
+
+Replace the BigQuery table after validation:
+
+```bash
+.venv/bin/python -m src.ui_socal.zip_centroids \
+  --source-csv path/to/zip_centroids.csv \
+  --write
+```
+
 ## Deployment
 
 Manual deployment is in:
