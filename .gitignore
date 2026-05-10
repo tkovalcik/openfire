@@ -8,7 +8,13 @@ artifacts/
 mlruns/
 .DS_Store
 data/
+config/
+!frontend-socal-deckgl/data/
+!frontend-socal-deckgl/data/aoi_counties.geojson
+!frontend-socal-deckgl/data/socal_demo_manifest.json
 
 # Local session files — not for the shared repo
 CLAUDE.md
 docs/PROGRESS.md
+docs/INTERNAL.md
+plan_*.md

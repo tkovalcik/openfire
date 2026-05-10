@@ -5,63 +5,72 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+# Mirrors src/pipelines/train.py::FEATURE_COLUMNS — the 34-column gold-feature
+# input vector consumed by the XGBoost model. Keep this list in lockstep with
+# the training pipeline; the serving bundle's feature_columns must match.
 FEATURE_COLUMNS = [
-    "latitude",
-    "longitude",
-    "NDVI",
-    "EVI",
-    "NDWI",
-    "NBR",
-    "B2",
-    "B3",
-    "B4",
-    "B8",
-    "B11",
-    "B12",
-    "elevation",
-    "slope",
-    "aspect",
-    "mean_ndvi_100m",
-    "mean_ndvi_500m",
-    "precip_7d_sum",
-    "precip_30d_sum",
-    "temp_7d_mean",
-    "temp_30d_mean",
-    "humidity_7d_mean",
-    "humidity_30d_mean",
-    "wind_7d_max",
-    "wind_30d_max",
+    "days_since_last_burn",
+    "ndvi_change_5d", "ndvi_change_15d", "ndvi_change_30d", "ndvi_change_60d",
+    "ndwi_change_5d", "ndwi_change_15d", "ndwi_change_30d", "ndwi_change_60d",
+    "temp_change_5d", "temp_change_15d", "temp_change_30d", "temp_change_60d",
+    "precip_change_15d", "precip_change_30d", "precip_change_60d",
+    "mean_elevation", "mean_slope", "mean_cos_aspect", "mean_sin_aspect",
+    "B2", "B3", "B4", "B8", "B11", "B12",
+    "mean_NDVI", "mean_EVI", "mean_NDWI", "mean_NBR",
+    "gridmet_temp_max", "gridmet_humidity_min", "gridmet_precip_sum", "gridmet_wind_max",
 ]
 
 
 class FeatureRow(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # Geometry — not part of FEATURE_COLUMNS; required for GeoJSON output.
     latitude: float = Field(..., ge=-90.0, le=90.0)
     longitude: float = Field(..., ge=-180.0, le=180.0)
-    NDVI: float = Field(..., ge=-1.0, le=1.0)
-    EVI: float
-    NDWI: float
-    NBR: float
+
+    # 9999 is a magic "never burned" sentinel; keep the upper bound permissive.
+    days_since_last_burn: int = Field(..., ge=0)
+
+    ndvi_change_5d: float
+    ndvi_change_15d: float
+    ndvi_change_30d: float
+    ndvi_change_60d: float
+
+    ndwi_change_5d: float
+    ndwi_change_15d: float
+    ndwi_change_30d: float
+    ndwi_change_60d: float
+
+    temp_change_5d: float
+    temp_change_15d: float
+    temp_change_30d: float
+    temp_change_60d: float
+
+    precip_change_15d: float
+    precip_change_30d: float
+    precip_change_60d: float
+
+    mean_elevation: float
+    mean_slope: float = Field(..., ge=0.0)
+    mean_cos_aspect: float = Field(..., ge=-1.0, le=1.0)
+    mean_sin_aspect: float = Field(..., ge=-1.0, le=1.0)
+
     B2: float
     B3: float
     B4: float
     B8: float
     B11: float
     B12: float
-    elevation: float
-    slope: float = Field(..., ge=0.0)
-    aspect: float = Field(..., ge=0.0, le=360.0)
-    mean_ndvi_100m: float = Field(..., ge=-1.0, le=1.0)
-    mean_ndvi_500m: float = Field(..., ge=-1.0, le=1.0)
-    precip_7d_sum: float = Field(..., ge=0.0)
-    precip_30d_sum: float = Field(..., ge=0.0)
-    temp_7d_mean: float
-    temp_30d_mean: float
-    humidity_7d_mean: float = Field(..., ge=0.0, le=100.0)
-    humidity_30d_mean: float = Field(..., ge=0.0, le=100.0)
-    wind_7d_max: float = Field(..., ge=0.0)
-    wind_30d_max: float = Field(..., ge=0.0)
+
+    mean_NDVI: float = Field(..., ge=-1.0, le=1.0)
+    mean_EVI: float
+    mean_NDWI: float = Field(..., ge=-1.0, le=1.0)
+    mean_NBR: float
+
+    gridmet_temp_max: float
+    gridmet_humidity_min: float = Field(..., ge=0.0, le=100.0)
+    gridmet_precip_sum: float = Field(..., ge=0.0)
+    gridmet_wind_max: float = Field(..., ge=0.0)
 
 
 class PredictionRequest(BaseModel):

@@ -228,6 +228,15 @@ files and proxies `/data/*` to private prediction objects in GCS using the
 runtime service account, so the browser does not need bucket CORS or public
 GCS reads.
 
+`frontend-socal-deckgl/` is a standalone deck.gl prototype static root. It
+reuses the same FastAPI static/proxy service code, manifest contract, `/data/*`
+proxy, timeline model, and UI telemetry envelope, but it is packaged with
+`docker/Dockerfile.ui_socal_deckgl` and deploys to the separate
+`openfire-ui-socal-deckgl` Cloud Run service through a manual workflow. Its
+runtime `OPENFIRE_UI_VARIANT` is `deckgl-scatterplot`, so BigQuery and Faro can
+compare it side by side with production `leaflet-canvas` without replacing the
+Leaflet service.
+
 Current UI behavior:
 
 - Reads `/data/manifest.json`.
@@ -236,8 +245,45 @@ Current UI behavior:
 - Falls back to deterministic client-side downsampling for older manifests.
 - Supports play/pause, arrow-key navigation, LRU snapshot caching, neighbor
   prefetch, render-mode display, collapsible panels, and adaptive point styling.
+- Tracks client-side snapshot load, render, paint, and long-task timings in a
+  collapsible Performance panel and `window.OPENFIRE_SOCAL_PERFORMANCE`.
+- Sends batched UI performance telemetry to `/metrics/ui/performance`, grouped
+  by `ui_variant` so Leaflet, deck.gl, MapLibre, or other prototypes can be
+  compared in the same backend table.
+- Serves `/metrics/ui/dashboard`, a BigQuery-backed dashboard that ranks UI
+  variant, event, and render-mode groups by P95 paint, load, render, and frame
+  wait timings.
+- Serves `/runtime-config.js` so Cloud Run environment settings can configure
+  browser-safe observability flags without rebuilding static assets.
+- Loads Web Vitals field measurement from the browser and stores those events
+  in the same UI performance table.
+- Records uncaught browser errors and unhandled promise rejections in the same
+  telemetry envelope with sanitized error metadata and a stack hash, not raw
+  stack traces.
+- Optionally initializes Grafana Faro Cloud when
+  `OPENFIRE_FARO_COLLECTOR_URL` is configured. The same OpenFire-specific map
+  timings are exported as Faro custom measurements so the Grafana dashboard can
+  rank UI bottlenecks without replacing the BigQuery telemetry baseline.
 - Temporarily excludes `2025-12-23` and `2025-12-28` from the timeline while
   those low-count historical snapshots are investigated.
+
+For read-only UI testing against the real inference dataset, run the same
+FastAPI UI service with telemetry disabled and the live manifest enabled:
+
+```bash
+OPENFIRE_SOCAL_STATIC_ROOT=frontend-socal-deckgl \
+OPENFIRE_UI_VARIANT=deckgl-scatterplot-readonly \
+OPENFIRE_UI_PERF_ENABLED=false \
+OPENFIRE_WEB_VITALS_ENABLED=false \
+OPENFIRE_FARO_ENABLED=false \
+OPENFIRE_USE_LIVE_MANIFEST=true \
+uvicorn src.ui_socal.app:app --host 127.0.0.1 --port 8090
+```
+
+That mode still reads `gs://openfire/predictions/manifest.json` and referenced
+snapshots through `/data/*`, but it does not emit UI performance, Web Vitals, or
+Faro telemetry. The checked-in three-window demo manifest should remain only as
+an offline fallback and fixture for deterministic unit tests.
 
 ---
 
@@ -249,16 +295,22 @@ Current UI behavior:
 | Cloud Run Job `openfire-train` | XGBoost training | 8 vCPU / 32 GiB, `max-retries=0`. |
 | Cloud Run Service `openfire-api` | Existing serving API | Managed by `cd.yml`. |
 | Cloud Run Service `openfire-ui-socal` | SoCal prediction viewer and GCS proxy | 1 vCPU / 256 MiB, scale to zero, managed by `ui_socal.yml`. |
+| Cloud Run Service `openfire-ui-socal-deckgl` | Standalone deck.gl UI prototype and GCS proxy | 1 vCPU / 512 MiB, scale to zero, manual blue/green prototype workflow. |
 | Cloud Run Service `openfire-monitoring` | Evidently report dashboard | Read-only GCS report browser, managed by `monitoring.yml`. |
 | Cloud Scheduler `openfire-inference-daily` | Daily inference trigger | Runs `openfire-inference` with baked `--mode latest` args. |
 | MLflow server | Experiment tracking and registry | Registry name: `openfire-gold`. |
 | BigQuery dataset `openfire_features` | Silver, gold, inference, prediction tables | Project configured by deployment environment. |
+| BigQuery table `openfire_features.ui_performance_events` | Browser UI performance telemetry | Partitioned by `received_at`, clustered by UI variant, event, window, and render mode. |
 | GCS bucket `openfire` | Gold Parquet, predictions, monitoring artifacts | Prediction objects live under `gs://openfire/predictions/`. |
 
 IAM notes:
 
 - The SoCal UI runtime service account needs read-only GCS access to the
-  prediction objects. The GitHub deployer also needs
+  prediction objects. It also needs BigQuery write/query permissions for
+  `ui_performance_events` if live UI telemetry and dashboarding are enabled:
+  dataset-level `WRITER` ACL access, or an equivalent
+  `roles/bigquery.dataEditor` dataset IAM binding where supported, plus
+  `roles/bigquery.jobUser` on the project. The GitHub deployer also needs
   `roles/iam.serviceAccountUser` on that runtime service account for
   `gcloud run deploy --service-account`.
 - The Scheduler service account has `roles/run.invoker` for the inference job.
@@ -299,6 +351,45 @@ Current production path is Leaflet Canvas plus gzipped full/`z8`/`z9` GeoJSON
 snapshots. That is the lowest-risk baseline for the current 65k-cell SoCal
 viewer.
 
+UI performance telemetry contract:
+
+- Browser clients emit batched `ui_performance_v1` events to
+  `/metrics/ui/performance`.
+- Each UI implementation must set a stable `ui_variant`, such as
+  `leaflet-canvas`, `deckgl-scatterplot`, or `maplibre-mvt`.
+- Events measure user-visible phases: snapshot load, render, paint readiness,
+  frame wait, rendered point count, zoom, cache hit, and render mode.
+- Web Vitals events use the same session, variant, and app-version envelope and
+  record metric name, value, delta, rating, and navigation type.
+- Browser error events use the same envelope and store error type, truncated
+  message/source, line/column, and stack hash so BigQuery remains the durable
+  backup for Grafana's shorter-retention error view.
+- Grafana Faro Cloud is an optional second sink. When enabled, the browser loads
+  the Faro Web SDK from the configured CDN URL, sends Faro's automatic frontend
+  observability signals to Grafana Cloud, and pushes OpenFire map timings as
+  `openfire_ui_interaction` custom measurements.
+- The telemetry contract does not store client IP addresses or raw user-agent
+  strings; it stores an anonymous session ID plus viewport, device, and network
+  summary fields needed for performance analysis.
+- The dashboard at `/metrics/ui/dashboard` groups by `ui_variant`, event, and
+  render mode so prototypes can be compared over the same live traffic window.
+
+Browser observability runtime configuration:
+
+| Variable | Purpose |
+|---|---|
+| `OPENFIRE_UI_VARIANT` | Stable variant label for comparisons. Current default: `leaflet-canvas`. |
+| `OPENFIRE_UI_VERSION` | Build or release label attached to browser telemetry. |
+| `OPENFIRE_WEB_VITALS_ENABLED` | Enables the Web Vitals browser library. Default: `true`. |
+| `OPENFIRE_FARO_COLLECTOR_URL` | Grafana Cloud Frontend Observability collector URL copied from the Grafana application setup page. When absent, Faro stays disabled. |
+| `OPENFIRE_FARO_ENVIRONMENT` | Grafana environment label, such as `production` or `staging`. |
+
+Programmatic Grafana Cloud reads use `scripts/query_grafana_faro.py`, which
+queries the Loki `/loki/api/v1/query_range` endpoint with
+`GRAFANA_CLOUD_LOKI_URL`, `GRAFANA_CLOUD_LOKI_USER`, and
+`GRAFANA_CLOUD_LOKI_TOKEN` from local environment or the ignored `.env` file.
+The Loki token must be stored as a secret, not as browser config.
+
 | Option | Pros | Cons | Feasibility |
 |---|---|---|---|
 | Continue Leaflet Canvas optimization | Lowest risk; already deployed; works with current static/proxy architecture; precomputed variants reduce low-zoom load. | Browser still parses GeoJSON; full-detail zoom can remain marker-heavy. | Low difficulty. Best for short-term polish. |
@@ -306,9 +397,10 @@ viewer.
 | Migrate to MapLibre GL JS with PMTiles/MVT | Tiled static delivery, style expressions, renderer-managed culling, best path for larger AOIs or higher resolution. | Larger rewrite; requires tile generation, style migration, and proxy/range behavior decisions. | Medium-high difficulty. Best long-term scale path. |
 | Use FlatGeobuf viewport reads | Cloud-optimized binary vector format with spatial index and HTTP range reads; useful for viewport-only reads from object storage. | More custom integration; needs renderer pairing; Cloud Run proxy must preserve Range semantics well. | Medium-high difficulty. Consider after deck.gl/MapLibre evaluation. |
 
-Recommended order: measure the current Leaflet baseline, prototype deck.gl for
-risk points, then choose whether the project needs the larger MapLibre +
-PMTiles/MVT migration.
+Recommended order: collect the current Leaflet baseline from the built-in
+browser performance tracker and `/metrics/ui/dashboard`, prototype deck.gl for
+risk points with a distinct `ui_variant`, then choose whether the project needs
+the larger MapLibre + PMTiles/MVT migration.
 
 ---
 
