@@ -1,0 +1,116 @@
+name: Deploy SoCal UI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev]
+    paths:
+      - "frontend-socal/**"
+      - "src/ui_socal/**"
+      - "docker/Dockerfile.ui_socal"
+      - "docker/requirements.ui_socal.txt"
+      - ".github/workflows/ui_socal.yml"
+
+env:
+  GCP_PROJECT: msds603-mlops-project
+  REGION: us-central1
+  SERVICE_NAME: openfire-ui-socal
+  IMAGE: us-central1-docker.pkg.dev/msds603-mlops-project/openfire/ui-socal
+  SERVICE_ACCOUNT: openfire-ui-socal-runner@msds603-mlops-project.iam.gserviceaccount.com
+  GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+  GCP_DEPLOYER_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+  OPENFIRE_FARO_COLLECTOR_URL: ${{ vars.OPENFIRE_FARO_COLLECTOR_URL }}
+  OPENFIRE_FARO_ENVIRONMENT: ${{ vars.OPENFIRE_FARO_ENVIRONMENT || 'production' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          required_vars=(
+            GCP_WORKLOAD_IDENTITY_PROVIDER
+            GCP_DEPLOYER_SERVICE_ACCOUNT
+          )
+
+          for name in "${required_vars[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required repository variable: ${name}"
+              exit 1
+            fi
+          done
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        run: |
+          docker build -f docker/Dockerfile.ui_socal \
+            -t ${{ env.IMAGE }}:${{ github.sha }} \
+            -t ${{ env.IMAGE }}:latest \
+            .
+          docker push ${{ env.IMAGE }}:${{ github.sha }}
+          docker push ${{ env.IMAGE }}:latest
+
+      - name: Deploy to Cloud Run
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENV_VARS=(
+            "OPENFIRE_SOCAL_GCS_BUCKET=openfire"
+            "OPENFIRE_SOCAL_GCS_PREFIX=predictions"
+            "OPENFIRE_UI_PERF_ENABLED=true"
+            "OPENFIRE_UI_PERF_BQ_PROJECT=${{ env.GCP_PROJECT }}"
+            "OPENFIRE_UI_PERF_BQ_DATASET=openfire_features"
+            "OPENFIRE_UI_PERF_BQ_TABLE=ui_performance_events"
+            "OPENFIRE_UI_VARIANT=leaflet-canvas"
+            "OPENFIRE_UI_VERSION=${{ github.sha }}"
+            "OPENFIRE_WEB_VITALS_ENABLED=true"
+            "OPENFIRE_FARO_ENVIRONMENT=${OPENFIRE_FARO_ENVIRONMENT}"
+          )
+          if [[ -n "${OPENFIRE_FARO_COLLECTOR_URL:-}" ]]; then
+            ENV_VARS+=(
+              "OPENFIRE_FARO_ENABLED=true"
+              "OPENFIRE_FARO_COLLECTOR_URL=${OPENFIRE_FARO_COLLECTOR_URL}"
+            )
+          else
+            ENV_VARS+=("OPENFIRE_FARO_ENABLED=false")
+          fi
+          ENV_VAR_STRING="$(IFS=,; echo "${ENV_VARS[*]}")"
+
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image ${{ env.IMAGE }}:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.GCP_PROJECT }} \
+            --platform managed \
+            --service-account ${{ env.SERVICE_ACCOUNT }} \
+            --memory 256Mi \
+            --cpu 1 \
+            --min-instances 0 \
+            --max-instances 2 \
+            --set-env-vars "${ENV_VAR_STRING}" \
+            --allow-unauthenticated \
+            --quiet
+
+      - name: Print service URL
+        run: |
+          gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.GCP_PROJECT }} \
+            --format 'value(status.url)'

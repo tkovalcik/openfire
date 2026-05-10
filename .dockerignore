@@ -27,6 +27,12 @@ tests/
 # Local artifacts and datasets should be mounted, not baked into images.
 artifacts/
 data/
+!frontend-socal/data/
+frontend-socal/data/*
+!frontend-socal/data/aoi_counties.geojson
+!frontend-socal-deckgl/data/
+frontend-socal-deckgl/data/*
+!frontend-socal-deckgl/data/aoi_counties.geojson
 mlruns/
 .cache/
 
