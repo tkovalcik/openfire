@@ -116,6 +116,22 @@ Manual deployment is in:
 It builds `docker/Dockerfile.alert_worker`, creates or updates the Cloud Run Job
 `openfire-alert-worker`, and can optionally execute the job.
 
+The same workflow can optionally create or update a Cloud Scheduler trigger with
+`manage_scheduler=true`. The default schedule is daily at 16:00 UTC:
+
+```text
+0 16 * * *
+```
+
+The Scheduler target is the Cloud Run Jobs API:
+
+```text
+https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/msds603-mlops-project/jobs/openfire-alert-worker:run
+```
+
+The scheduler uses OAuth as required for `*.googleapis.com` targets. The runtime
+service account needs permission to invoke the Cloud Run Job.
+
 Real email sending is disabled unless the workflow input `send=true` is set.
 That path requires:
 
