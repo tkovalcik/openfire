@@ -21,6 +21,9 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_MANIFEST_URI = "gs://openfire/predictions/manifest.json"
 DEFAULT_THRESHOLD = 0.5
+DEFAULT_BQ_PROJECT = "msds603-mlops-project"
+DEFAULT_SUBS_BQ_DATASET = "openfire_features"
+DEFAULT_SUBS_BQ_TABLE = "ui_subscriptions"
 EARTH_RADIUS_KM = 6371.0088
 
 
@@ -70,6 +73,62 @@ def load_subscriptions_from_json(path: str | Path) -> list[Subscription]:
     rows = payload["subscriptions"] if isinstance(payload, dict) else payload
     subscriptions: list[Subscription] = []
     for row in rows:
+        subscriptions.append(
+            Subscription(
+                email=str(row["email"]).lower().strip(),
+                zip=str(row["zip"]).strip(),
+                risk_threshold=(
+                    None
+                    if row.get("risk_threshold") is None
+                    else _coerce_float(row.get("risk_threshold"), field_name="risk_threshold")
+                ),
+            )
+        )
+    return subscriptions
+
+
+def subscription_table_id(
+    *,
+    project: str | None = None,
+    dataset: str = DEFAULT_SUBS_BQ_DATASET,
+    table: str = DEFAULT_SUBS_BQ_TABLE,
+) -> str:
+    resolved_project = project or DEFAULT_BQ_PROJECT
+    return f"{resolved_project}.{dataset}.{table}"
+
+
+def subscriptions_query(table_id: str) -> str:
+    """Build the BigQuery query for the latest subscription per email and ZIP."""
+    escaped_table_id = table_id.replace("`", "")
+    return f"""
+SELECT
+  LOWER(TRIM(email)) AS email,
+  TRIM(zip) AS zip,
+  risk_threshold
+FROM `{escaped_table_id}`
+WHERE email IS NOT NULL
+  AND zip IS NOT NULL
+QUALIFY ROW_NUMBER() OVER (
+  PARTITION BY LOWER(TRIM(email)), TRIM(zip)
+  ORDER BY created_at DESC
+) = 1
+""".strip()
+
+
+def load_subscriptions_from_bigquery(
+    table_id: str,
+    *,
+    client: Any | None = None,
+) -> list[Subscription]:
+    """Load the current subscription set from BigQuery."""
+    if client is None:
+        from google.cloud import bigquery
+
+        project = table_id.split(".", 1)[0] if "." in table_id else None
+        client = bigquery.Client(project=project)
+
+    subscriptions: list[Subscription] = []
+    for row in client.query(subscriptions_query(table_id)).result():
         subscriptions.append(
             Subscription(
                 email=str(row["email"]).lower().strip(),
@@ -268,7 +327,17 @@ def evaluate_alerts(
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate OpenFire alert subscriptions.")
     parser.add_argument("--manifest-uri", default=DEFAULT_MANIFEST_URI)
-    parser.add_argument("--subscriptions-json", required=True)
+    parser.add_argument("--subscriptions-json")
+    parser.add_argument(
+        "--subscriptions-table",
+        help=(
+            "Fully-qualified BigQuery table id. Defaults can be composed with "
+            "--subscriptions-project/--subscriptions-dataset/--subscriptions-table-name."
+        ),
+    )
+    parser.add_argument("--subscriptions-project", default=DEFAULT_BQ_PROJECT)
+    parser.add_argument("--subscriptions-dataset", default=DEFAULT_SUBS_BQ_DATASET)
+    parser.add_argument("--subscriptions-table-name", default=DEFAULT_SUBS_BQ_TABLE)
     parser.add_argument("--zip-centroids-json", required=True)
     parser.add_argument("--default-threshold", type=float, default=DEFAULT_THRESHOLD)
     parser.add_argument(
@@ -282,10 +351,22 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
+    if args.subscriptions_json and args.subscriptions_table:
+        raise SystemExit("--subscriptions-json and --subscriptions-table cannot both be set.")
     manifest_uri = normalize_uri(args.manifest_uri)
     manifest = load_manifest(manifest_uri)
     geojson_uri = latest_geojson_uri(manifest, manifest_uri=manifest_uri)
-    subscriptions = load_subscriptions_from_json(args.subscriptions_json)
+    if args.subscriptions_json:
+        subscriptions = load_subscriptions_from_json(args.subscriptions_json)
+        subscriptions_source = normalize_uri(args.subscriptions_json)
+    else:
+        table_id = args.subscriptions_table or subscription_table_id(
+            project=args.subscriptions_project,
+            dataset=args.subscriptions_dataset,
+            table=args.subscriptions_table_name,
+        )
+        subscriptions = load_subscriptions_from_bigquery(table_id)
+        subscriptions_source = table_id
     centroids = load_zip_centroids_from_json(args.zip_centroids_json)
     cells = load_risk_cells(geojson_uri)
     candidates = evaluate_alerts(
@@ -302,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
                 "evaluated_at": datetime.now(timezone.utc).isoformat(),
                 "manifest_uri": manifest_uri,
                 "geojson_uri": geojson_uri,
+                "subscriptions_source": subscriptions_source,
                 "subscriptions": len(subscriptions),
                 "risk_cells": len(cells),
                 "alert_candidates": [

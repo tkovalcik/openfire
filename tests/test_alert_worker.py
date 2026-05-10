@@ -11,8 +11,11 @@ from src.ui_socal.alert_worker import (
     evaluate_alerts,
     haversine_km,
     latest_geojson_uri,
+    load_subscriptions_from_bigquery,
     load_risk_cells,
     resolve_manifest_asset_uri,
+    subscription_table_id,
+    subscriptions_query,
 )
 
 
@@ -58,6 +61,50 @@ def test_latest_geojson_uri_resolves_local_relative_manifest_path(tmp_path: Path
     )
 
     assert out == f"local://{tmp_path / 'predictions_20260417.geojson'}"
+
+
+def test_subscription_table_id_uses_default_bigquery_location() -> None:
+    assert (
+        subscription_table_id()
+        == "msds603-mlops-project.openfire_features.ui_subscriptions"
+    )
+
+
+def test_subscriptions_query_deduplicates_by_email_and_zip() -> None:
+    query = subscriptions_query("project.dataset.table")
+
+    assert "FROM `project.dataset.table`" in query
+    assert "PARTITION BY LOWER(TRIM(email)), TRIM(zip)" in query
+    assert "ORDER BY created_at DESC" in query
+
+
+def test_load_subscriptions_from_bigquery_uses_query_rows() -> None:
+    client = _FakeBigQueryClient(
+        [
+            {"email": " A@EXAMPLE.COM ", "zip": " 90001 ", "risk_threshold": "0.7"},
+            {"email": "b@example.com", "zip": "90002", "risk_threshold": None},
+        ]
+    )
+
+    subscriptions = load_subscriptions_from_bigquery(
+        "project.dataset.ui_subscriptions",
+        client=client,
+    )
+
+    assert client.queries == [subscriptions_query("project.dataset.ui_subscriptions")]
+    assert subscriptions == [
+        Subscription(email="a@example.com", zip="90001", risk_threshold=0.7),
+        Subscription(email="b@example.com", zip="90002", risk_threshold=None),
+    ]
+
+
+def test_load_subscriptions_from_bigquery_handles_empty_table() -> None:
+    subscriptions = load_subscriptions_from_bigquery(
+        "project.dataset.ui_subscriptions",
+        client=_FakeBigQueryClient([]),
+    )
+
+    assert subscriptions == []
 
 
 def test_resolve_manifest_asset_uri_preserves_gcs_uri() -> None:
@@ -128,3 +175,21 @@ def _cell(*, latitude: float, longitude: float, risk: float):
         window_start_date="2026-04-17",
         model_version="test",
     )
+
+
+class _FakeQueryJob:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+
+    def result(self) -> list[dict[str, object]]:
+        return self._rows
+
+
+class _FakeBigQueryClient:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+        self.queries: list[str] = []
+
+    def query(self, query: str) -> _FakeQueryJob:
+        self.queries.append(query)
+        return _FakeQueryJob(self._rows)
