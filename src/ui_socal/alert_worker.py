@@ -13,8 +13,10 @@ from datetime import datetime, timezone
 import json
 import logging
 import math
+import os
 from pathlib import Path
 from typing import Any, Iterable
+import urllib.request
 
 
 LOGGER = logging.getLogger(__name__)
@@ -26,6 +28,7 @@ DEFAULT_SUBS_BQ_DATASET = "openfire_features"
 DEFAULT_SUBS_BQ_TABLE = "ui_subscriptions"
 DEFAULT_ZIP_CENTROIDS_BQ_DATASET = "openfire_features"
 DEFAULT_ZIP_CENTROIDS_BQ_TABLE = "zip_centroids"
+DEFAULT_APP_URL = "https://openfire-ui-socal-deckgl-222683846563.us-central1.run.app"
 EARTH_RADIUS_KM = 6371.0088
 
 
@@ -60,6 +63,14 @@ class AlertCandidate:
     risk_cell: RiskCell
     threshold: float
     distance_km: float
+
+
+@dataclass(frozen=True)
+class EmailAlert:
+    to_email: str
+    from_email: str
+    subject: str
+    text_body: str
 
 
 def _coerce_float(value: Any, *, field_name: str) -> float:
@@ -386,6 +397,62 @@ def evaluate_alerts(
     return candidates
 
 
+def render_alert_email(
+    candidate: AlertCandidate,
+    *,
+    from_email: str,
+    app_url: str = DEFAULT_APP_URL,
+) -> EmailAlert:
+    risk_percent = candidate.risk_cell.risk_probability * 100
+    threshold_percent = candidate.threshold * 100
+    subject = f"OpenFire wildfire risk alert for ZIP {candidate.subscription.zip}"
+    text_body = "\n".join(
+        [
+            f"OpenFire detected elevated wildfire risk near ZIP {candidate.subscription.zip}.",
+            "",
+            f"Latest risk probability: {risk_percent:.1f}%",
+            f"Your alert threshold: {threshold_percent:.1f}%",
+            f"Forecast window start: {candidate.risk_cell.window_start_date or 'unknown'}",
+            f"Nearest modeled cell: {candidate.distance_km:.1f} km from ZIP centroid",
+            "",
+            f"View the map: {app_url}",
+        ]
+    )
+    return EmailAlert(
+        to_email=candidate.subscription.email,
+        from_email=from_email,
+        subject=subject,
+        text_body=text_body,
+    )
+
+
+def send_email_via_sendgrid(
+    message: EmailAlert,
+    *,
+    api_key: str,
+    urlopen: Any = urllib.request.urlopen,
+) -> None:
+    payload = {
+        "personalizations": [{"to": [{"email": message.to_email}]}],
+        "from": {"email": message.from_email},
+        "subject": message.subject,
+        "content": [{"type": "text/plain", "value": message.text_body}],
+    }
+    request = urllib.request.Request(
+        "https://api.sendgrid.com/v3/mail/send",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "authorization": f"Bearer {api_key}",
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+    with urlopen(request, timeout=30) as response:
+        status = getattr(response, "status", 202)
+        if status >= 400:
+            raise RuntimeError(f"SendGrid returned HTTP {status}")
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate OpenFire alert subscriptions.")
     parser.add_argument("--manifest-uri", default=DEFAULT_MANIFEST_URI)
@@ -413,6 +480,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--zip-centroids-dataset", default=DEFAULT_ZIP_CENTROIDS_BQ_DATASET)
     parser.add_argument("--zip-centroids-table-name", default=DEFAULT_ZIP_CENTROIDS_BQ_TABLE)
     parser.add_argument("--default-threshold", type=float, default=DEFAULT_THRESHOLD)
+    parser.add_argument("--app-url", default=os.getenv("OPENFIRE_ALERT_APP_URL", DEFAULT_APP_URL))
+    parser.add_argument("--alert-from-email", default=os.getenv("OPENFIRE_ALERT_FROM_EMAIL"))
+    parser.add_argument("--sendgrid-api-key", default=os.getenv("SENDGRID_API_KEY"))
+    parser.add_argument(
+        "--send",
+        action="store_true",
+        help="Send real email alerts through SendGrid. Dry-run is the default.",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -460,11 +535,26 @@ def main(argv: list[str] | None = None) -> int:
         cells,
         default_threshold=args.default_threshold,
     )
+    dry_run = not args.send
+    from_email = args.alert_from_email or "alerts@openfire.local"
+    email_alerts = [
+        render_alert_email(candidate, from_email=from_email, app_url=args.app_url)
+        for candidate in candidates
+    ]
+    sent_count = 0
+    if args.send:
+        if not args.alert_from_email:
+            raise SystemExit("--alert-from-email or OPENFIRE_ALERT_FROM_EMAIL is required with --send.")
+        if not args.sendgrid_api_key:
+            raise SystemExit("--sendgrid-api-key or SENDGRID_API_KEY is required with --send.")
+        for email_alert in email_alerts:
+            send_email_via_sendgrid(email_alert, api_key=args.sendgrid_api_key)
+            sent_count += 1
 
     print(
         json.dumps(
             {
-                "dry_run": True,
+                "dry_run": dry_run,
                 "evaluated_at": datetime.now(timezone.utc).isoformat(),
                 "manifest_uri": manifest_uri,
                 "geojson_uri": geojson_uri,
@@ -473,6 +563,11 @@ def main(argv: list[str] | None = None) -> int:
                 "zip_centroids_source": zip_centroids_source,
                 "zip_centroids": len(centroids),
                 "risk_cells": len(cells),
+                "delivery": {
+                    "provider": "sendgrid",
+                    "attempted": len(email_alerts) if args.send else 0,
+                    "sent": sent_count,
+                },
                 "alert_candidates": [
                     {
                         "email": candidate.subscription.email,
@@ -484,6 +579,15 @@ def main(argv: list[str] | None = None) -> int:
                         "nearest_cell_distance_km": round(candidate.distance_km, 3),
                     }
                     for candidate in candidates
+                ],
+                "email_alerts": [
+                    {
+                        "to_email": email_alert.to_email,
+                        "from_email": email_alert.from_email,
+                        "subject": email_alert.subject,
+                        "text_body": email_alert.text_body,
+                    }
+                    for email_alert in email_alerts
                 ],
             },
             indent=2,

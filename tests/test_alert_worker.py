@@ -6,6 +6,9 @@ from pathlib import Path
 import pytest
 
 from src.ui_socal.alert_worker import (
+    AlertCandidate,
+    EmailAlert,
+    RiskCell,
     Subscription,
     ZipCentroid,
     evaluate_alerts,
@@ -14,7 +17,9 @@ from src.ui_socal.alert_worker import (
     load_subscriptions_from_bigquery,
     load_zip_centroids_from_bigquery,
     load_risk_cells,
+    render_alert_email,
     resolve_manifest_asset_uri,
+    send_email_via_sendgrid,
     subscription_table_id,
     subscriptions_query,
     zip_centroid_table_id,
@@ -44,6 +49,57 @@ def test_evaluate_alerts_uses_nearest_cell_and_threshold() -> None:
 
     assert [candidate.subscription.email for candidate in candidates] == ["a@example.com"]
     assert candidates[0].risk_cell.risk_probability == pytest.approx(0.7)
+
+
+def test_render_alert_email_includes_risk_context() -> None:
+    candidate = AlertCandidate(
+        subscription=Subscription(email="a@example.com", zip="90001", risk_threshold=0.6),
+        zip_centroid=ZipCentroid(zip="90001", latitude=34.0, longitude=-118.0),
+        risk_cell=_cell(latitude=34.01, longitude=-118.01, risk=0.75),
+        threshold=0.6,
+        distance_km=1.23,
+    )
+
+    message = render_alert_email(
+        candidate,
+        from_email="alerts@example.com",
+        app_url="https://example.com/map",
+    )
+
+    assert message.to_email == "a@example.com"
+    assert message.from_email == "alerts@example.com"
+    assert "90001" in message.subject
+    assert "75.0%" in message.text_body
+    assert "60.0%" in message.text_body
+    assert "https://example.com/map" in message.text_body
+
+
+def test_send_email_via_sendgrid_posts_expected_payload() -> None:
+    calls: list[object] = []
+
+    def fake_urlopen(request, timeout: int):
+        calls.append((request, timeout))
+        return _FakeHttpResponse(status=202)
+
+    send_email_via_sendgrid(
+        EmailAlert(
+            to_email="a@example.com",
+            from_email="alerts@example.com",
+            subject="Risk alert",
+            text_body="Body text",
+        ),
+        api_key="test-key",
+        urlopen=fake_urlopen,
+    )
+
+    request, timeout = calls[0]
+    payload = json.loads(request.data.decode("utf-8"))
+    assert timeout == 30
+    assert request.full_url == "https://api.sendgrid.com/v3/mail/send"
+    assert request.headers["Authorization"] == "Bearer test-key"
+    assert payload["personalizations"][0]["to"][0]["email"] == "a@example.com"
+    assert payload["from"]["email"] == "alerts@example.com"
+    assert payload["content"][0]["value"] == "Body text"
 
 
 def test_latest_geojson_uri_resolves_local_relative_manifest_path(tmp_path: Path) -> None:
@@ -213,8 +269,6 @@ def test_load_risk_cells_parses_geojson(tmp_path: Path) -> None:
 
 
 def _cell(*, latitude: float, longitude: float, risk: float):
-    from src.ui_socal.alert_worker import RiskCell
-
     return RiskCell(
         latitude=latitude,
         longitude=longitude,
@@ -241,3 +295,14 @@ class _FakeBigQueryClient:
     def query(self, query: str) -> _FakeQueryJob:
         self.queries.append(query)
         return _FakeQueryJob(self._rows)
+
+
+class _FakeHttpResponse:
+    def __init__(self, *, status: int) -> None:
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        return None
