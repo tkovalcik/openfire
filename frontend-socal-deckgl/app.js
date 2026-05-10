@@ -1,112 +1,81 @@
+// OpenFire SoCal UI — MapLibre GL + deck.gl integration.
+//
+// Architecture: MapLibre GL renders the basemap as WebGL vector tiles in
+// a single canvas. deck.gl's MapboxOverlay registers itself with MapLibre
+// and renders into the SAME WebGL context. Both layers share the camera,
+// so zoom/pan are GPU-accelerated and visually seamless — the heatmap
+// follows the basemap pixel-perfect at every animation frame, no fade
+// tricks, no offset glitches.
+
 const config = window.OPENFIRE_SOCAL_CONFIG;
 const deckApi = window.deck || {};
-const DECK_RENDERER_LABEL = "deck.gl ScatterplotLayer";
 
-const map = L.map("map", {
-  zoomControl: true,
-  preferCanvas: true,
-}).setView(config.map.center, config.map.zoom);
-
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  attribution: "&copy; OpenStreetMap contributors",
-  maxZoom: 18,
-}).addTo(map);
-
-map.setMinZoom(config.map.minZoom || 5);
-
-function configureMapPanes() {
-  const paneOrder = [
-    ["riskPane", 410],
-    ["aoiPane", 430],
-    ["labelPane", 610],
-  ];
-
-  paneOrder.forEach(([name, zIndex]) => {
-    const pane = map.createPane(name);
-    pane.style.zIndex = String(zIndex);
-    pane.style.pointerEvents = name === "riskPane" ? "auto" : "none";
-  });
-}
-
-configureMapPanes();
-
-const nodes = {
-  status: document.getElementById("status-message"),
-  source: document.getElementById("source-message"),
-  statusMeta: document.getElementById("meta-status"),
-  windowDate: document.getElementById("meta-window-date"),
-  modelVersion: document.getElementById("meta-model-version"),
-  featureCount: document.getElementById("meta-feature-count"),
-  renderMode: document.getElementById("meta-render-mode"),
-  countyCount: document.getElementById("meta-county-count"),
-  slider: document.getElementById("timeline-slider"),
-  timelineDate: document.getElementById("timeline-date"),
-  timelinePosition: document.getElementById("timeline-position"),
-  timelineTicks: document.getElementById("timeline-ticks"),
-  playbackToggle: document.getElementById("playback-toggle"),
-  perfLatest: document.getElementById("perf-latest"),
-  perfSnapshotLoad: document.getElementById("perf-snapshot-load"),
-  perfRender: document.getElementById("perf-render"),
-  perfPaint: document.getElementById("perf-paint"),
-  perfP95Paint: document.getElementById("perf-p95-paint"),
-  perfLongTasks: document.getElementById("perf-long-tasks"),
-};
+// MapLibre uses [lon, lat] (GeoJSON convention).
+const map = new maplibregl.Map({
+  container: "map",
+  style: config.basemapStyle,
+  center: config.map.center,
+  zoom: config.map.zoom,
+  minZoom: config.map.minZoom,
+  maxZoom: config.map.maxZoom,
+  attributionControl: { compact: true },
+});
+map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
 
 const state = {
   manifest: null,
   aoi: null,
-  activeSnapshot: null,
-  activeSnapshotUri: "",
-  activeSnapshotPrecomputed: false,
-  activeSnapshotRenderLabel: "Loading...",
-  riskLayer: null,
-  renderSignature: "",
-  renderedFeatureCount: 0,
+  landMask: null,
   windows: [],
   activeIndex: 0,
   cache: new Map(),
+  activeFeatures: [],
+  activeWindow: null,
   playbackTimer: null,
   playbackLoading: false,
-  performance: {
-    samples: loadStoredPerformanceSamples(),
-    longTaskCount: 0,
-    longTaskTotalMs: 0,
-    lastLongTaskMs: 0,
-    longTaskObserver: null,
-    telemetryQueue: [],
-    telemetryFlushInFlight: false,
-    telemetryTimer: null,
-    sessionId: loadPerformanceSessionId(),
-    faro: null,
-    faroReady: false,
-    faroMeasurementQueue: [],
-  },
+  overlay: null,
+  rebuildPending: false,
+  waterBeforeId: null,
 };
 
-const scriptLoadPromises = new Map();
+// ── HeatmapLayer config ──────────────────────────────────────────────────
 
-function setStatus(message, isError = false) {
-  nodes.status.textContent = message;
-  nodes.status.style.color = isError ? "#a33a2a" : "";
+const HEATMAP_INTENSITY = 1;
+// Low threshold = full smooth gradient with the soft kernel tail intact.
+// We don't need the threshold to clip ocean bleed anymore — the basemap's
+// water layer (rendered ABOVE the heat via interleaved beforeId) does that
+// for free, so we can keep the inland gradient buttery-smooth.
+const HEATMAP_THRESHOLD = 0.05;
+
+function heatmapRadiusForZoom(zoom) {
+  // Kernel radius in pixels. With MEAN aggregation, the radius must be
+  // large enough that every pixel has many contributing cells — otherwise
+  // low-prob regions show cell-row banding (each pixel only averages 1-2
+  // cells, so individual cells become visible). Empirically, ~6× the cell
+  // pixel-spacing gives smooth blending at every zoom level.
+  if (zoom <= 7) return 36;
+  if (zoom <= 8) return 50;
+  if (zoom <= 9) return 75;
+  if (zoom <= 10) return 110;
+  if (zoom <= 11) return 160;
+  if (zoom <= 12) return 220;
+  return 300;
 }
 
-function isLocalDevelopment() {
-  return ["", "localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
-}
+// ── Resolution helpers ──────────────────────────────────────────────────
 
 function resolveAssetUrl(url) {
-  if (!url) {
-    return "";
-  }
+  if (!url) return "";
   if (url.startsWith("gs://openfire/predictions/")) {
-    return `${config.dataProxyPrefix || "/data/"}${url.split("/").pop()}`;
+    return `${config.dataProxyPrefix}${url.split("/").pop()}`;
   }
   if (url.startsWith("https://storage.googleapis.com/openfire/predictions/")) {
-    return `${config.dataProxyPrefix || "/data/"}${url.split("/").pop()}`;
+    return `${config.dataProxyPrefix}${url.split("/").pop()}`;
   }
-  if (url.startsWith("/")) {
-    return url;
+  if (url.startsWith("../frontend-socal/data/")) {
+    return `${config.dataProxyPrefix}${url.split("/").pop()}`;
   }
+  if (url.startsWith("/")) return url;
   return new URL(url, window.location.href).toString();
 }
 
@@ -122,1356 +91,446 @@ async function fetchManifest() {
   try {
     return await fetchJson(config.manifestUrl);
   } catch (error) {
-    if (!isLocalDevelopment() || !config.demoManifestUrl || config.demoManifestUrl === config.manifestUrl) {
-      throw error;
+    if (config.demoManifestUrl && config.demoManifestUrl !== config.manifestUrl) {
+      console.warn("Live manifest unavailable; loading local demo manifest.", error);
+      return fetchJson(config.demoManifestUrl);
     }
-    setStatus("Live manifest unavailable; loading local demo manifest.");
-    return fetchJson(config.demoManifestUrl);
+    throw error;
   }
 }
 
-function getBand(probability) {
-  return (
-    config.riskBands.find((band) => probability >= band.min && probability < band.max) ||
-    config.riskBands[config.riskBands.length - 1]
-  );
+// ── AOI / land-mask point-in-polygon filter ─────────────────────────────
+
+const _ringBoundsCache = new WeakMap();
+
+function _ringBounds(ring) {
+  let cached = _ringBoundsCache.get(ring);
+  if (cached) return cached;
+  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+  for (let i = 0; i < ring.length; i += 1) {
+    const lon = ring[i][0];
+    const lat = ring[i][1];
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+    if (lon < minLon) minLon = lon;
+    if (lon > maxLon) maxLon = lon;
+  }
+  cached = { minLat, maxLat, minLon, maxLon };
+  _ringBoundsCache.set(ring, cached);
+  return cached;
 }
 
-function createLegend() {
-  const legendRoot = document.getElementById("legend");
-  legendRoot.innerHTML = "";
-
-  config.riskBands.forEach((band) => {
-    const row = document.createElement("div");
-    row.className = "legend-row";
-    row.innerHTML = `
-      <span class="legend-swatch" style="background:${band.color}"></span>
-      <span>${band.label}</span>
-    `;
-    legendRoot.appendChild(row);
-  });
+function _pointInRing(lat, lon, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const xi = ring[i][0];
+    const yi = ring[i][1];
+    const xj = ring[j][0];
+    const yj = ring[j][1];
+    const intersect =
+      (yi > lat) !== (yj > lat) &&
+      lon < ((xj - xi) * (lat - yi)) / ((yj - yi) || Number.EPSILON) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
 }
 
-function pointVisualStyle(zoom = map.getZoom()) {
-  if (zoom <= 8) {
-    return {
-      radius: 2.2,
-      weight: 0.6,
-      opacity: 0.5,
-      fillOpacity: 0.34,
-    };
+function _polygonContainsPoint(polygon, lat, lon) {
+  const outer = polygon[0];
+  if (!outer || outer.length < 3) return false;
+  const b = _ringBounds(outer);
+  if (lat < b.minLat || lat > b.maxLat || lon < b.minLon || lon > b.maxLon) {
+    return false;
   }
-  if (zoom <= 9) {
-    return {
-      radius: 2.7,
-      weight: 0.8,
-      opacity: 0.62,
-      fillOpacity: 0.46,
-    };
+  if (!_pointInRing(lat, lon, outer)) return false;
+  for (let i = 1; i < polygon.length; i += 1) {
+    if (_pointInRing(lat, lon, polygon[i])) return false;
   }
-  return {
-    radius: 3.3,
-    weight: 1,
-    opacity: 0.74,
-    fillOpacity: 0.6,
-  };
+  return true;
 }
 
-function hexToRgba(hex, alpha = 255) {
-  const clean = String(hex || "#000000").replace("#", "");
-  const value = Number.parseInt(clean.length === 3
-    ? clean.split("").map((item) => item + item).join("")
-    : clean, 16);
-  if (!Number.isFinite(value)) {
-    return [0, 0, 0, alpha];
-  }
-  return [
-    (value >> 16) & 255,
-    (value >> 8) & 255,
-    value & 255,
-    alpha,
-  ];
-}
-
-function pointDeckStyle(feature, opacityScale = 1) {
-  const probability = Number(feature?.properties?.risk_probability ?? 0);
-  const band = getBand(probability);
-  const visual = pointVisualStyle();
-  return {
-    radius: visual.radius,
-    lineWidth: visual.weight,
-    fillColor: hexToRgba(band.color, Math.round(255 * visual.fillOpacity * opacityScale)),
-    lineColor: hexToRgba(band.color, Math.round(255 * visual.opacity * opacityScale)),
-  };
-}
-
-function formatProbability(value) {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric.toFixed(3) : "n/a";
-}
-
-function formatDate(value) {
-  const date = new Date(`${value}T00:00:00`);
-  if (Number.isNaN(date.getTime())) {
-    return value || "Unavailable";
-  }
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(date);
-}
-
-function performanceSettings() {
-  return config.performanceTracking || {};
-}
-
-function isPerformanceTrackingEnabled() {
-  return performanceSettings().enabled !== false;
-}
-
-function performanceNow() {
-  return window.performance?.now ? window.performance.now() : Date.now();
-}
-
-function booleanSetting(value, fallback = false) {
-  if (value === undefined || value === null) {
-    return fallback;
-  }
-  if (typeof value === "boolean") {
-    return value;
-  }
-  if (typeof value === "string") {
-    return ["1", "true", "yes"].includes(value.toLowerCase());
-  }
-  return Boolean(value);
-}
-
-function performanceStorageKey() {
-  return performanceSettings().storageKey || "";
-}
-
-function webVitalsSettings() {
-  return performanceSettings().webVitals || {};
-}
-
-function faroSettings() {
-  return performanceSettings().faro || {};
-}
-
-function loadExternalScript(url, globalName) {
-  if (!url) {
-    return Promise.reject(new Error("Missing script URL."));
-  }
-  if (globalName && window[globalName]) {
-    return Promise.resolve(window[globalName]);
-  }
-  if (scriptLoadPromises.has(url)) {
-    return scriptLoadPromises.get(url);
-  }
-
-  const promise = new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.async = true;
-    script.crossOrigin = "anonymous";
-    script.onload = () => resolve(globalName ? window[globalName] : script);
-    script.onerror = () => reject(new Error(`Failed to load script: ${url}`));
-    script.src = url;
-    document.head.appendChild(script);
-  });
-  scriptLoadPromises.set(url, promise);
-  return promise;
-}
-
-function performanceSessionStorageKey() {
-  return `${performanceStorageKey() || "openfire-socal-ui-performance"}:session`;
-}
-
-function randomSessionId() {
-  if (window.crypto?.randomUUID) {
-    return window.crypto.randomUUID();
-  }
-  if (window.crypto?.getRandomValues) {
-    const bytes = new Uint8Array(16);
-    window.crypto.getRandomValues(bytes);
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
-    return [
-      hex.slice(0, 4).join(""),
-      hex.slice(4, 6).join(""),
-      hex.slice(6, 8).join(""),
-      hex.slice(8, 10).join(""),
-      hex.slice(10, 16).join(""),
-    ].join("-");
-  }
-  return `session-${Date.now()}`;
-}
-
-function loadPerformanceSessionId() {
-  if (!isPerformanceTrackingEnabled()) {
-    return "";
-  }
-
-  const key = performanceSessionStorageKey();
-  try {
-    const existing = window.sessionStorage?.getItem(key);
-    if (existing) {
-      return existing;
-    }
-    const created = randomSessionId();
-    window.sessionStorage?.setItem(key, created);
-    return created;
-  } catch (error) {
-    return randomSessionId();
-  }
-}
-
-function loadStoredPerformanceSamples() {
-  if (!isPerformanceTrackingEnabled() || !performanceStorageKey()) {
-    return [];
-  }
-
-  try {
-    const raw = window.sessionStorage?.getItem(performanceStorageKey());
-    const samples = raw ? JSON.parse(raw) : [];
-    return Array.isArray(samples) ? samples : [];
-  } catch (error) {
-    return [];
-  }
-}
-
-function persistPerformanceSamples() {
-  if (!isPerformanceTrackingEnabled() || !performanceStorageKey()) {
-    return;
-  }
-
-  try {
-    window.sessionStorage?.setItem(
-      performanceStorageKey(),
-      JSON.stringify(state.performance.samples)
-    );
-  } catch (error) {
-    // Session storage can be unavailable in private or embedded contexts.
-  }
-}
-
-function formatDuration(ms) {
-  if (ms === null || ms === undefined) {
-    return "n/a";
-  }
-  const numeric = Number(ms);
-  if (!Number.isFinite(numeric)) {
-    return "n/a";
-  }
-  if (numeric < 1000) {
-    return `${Math.round(numeric)} ms`;
-  }
-  return `${(numeric / 1000).toFixed(2)} s`;
-}
-
-function formatFeatureCount(value) {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric.toLocaleString() : "0";
-}
-
-function percentile(values, percentileRank) {
-  const numericValues = values
-    .map((value) => Number(value))
-    .filter((value) => Number.isFinite(value))
-    .sort((a, b) => a - b);
-  if (!numericValues.length) {
-    return null;
-  }
-
-  const index = Math.ceil(percentileRank * numericValues.length) - 1;
-  return numericValues[Math.max(0, Math.min(index, numericValues.length - 1))];
-}
-
-function summarizePerformanceSamples(samples = state.performance.samples) {
-  const paintValues = samples.map((sample) => sample.paintReadyMs);
-  const renderValues = samples.map((sample) => sample.renderSyncMs);
-  const loadValues = samples
-    .filter((sample) => !sample.cacheHit)
-    .map((sample) => sample.snapshotLoadMs);
-
-  return {
-    sampleCount: samples.length,
-    p95PaintMs: percentile(paintValues, 0.95),
-    p95RenderMs: percentile(renderValues, 0.95),
-    p95SnapshotLoadMs: percentile(loadValues, 0.95),
-    longTaskCount: state.performance.longTaskCount,
-    longTaskTotalMs: state.performance.longTaskTotalMs,
-    lastSample: samples[samples.length - 1] || null,
-  };
-}
-
-function updatePerformancePanel() {
-  if (!isPerformanceTrackingEnabled() || !nodes.perfLatest) {
-    return;
-  }
-
-  const samples = state.performance.samples;
-  const latest = samples[samples.length - 1];
-  if (!latest) {
-    nodes.perfLatest.textContent = "Waiting...";
-    nodes.perfSnapshotLoad.textContent = "Waiting...";
-    nodes.perfRender.textContent = "Waiting...";
-    nodes.perfPaint.textContent = "Waiting...";
-    nodes.perfP95Paint.textContent = "Waiting...";
-    nodes.perfLongTasks.textContent = `${state.performance.longTaskCount}`;
-    return;
-  }
-
-  const summary = summarizePerformanceSamples(samples);
-  const loadLabel = latest.cacheHit
-    ? "cache"
-    : formatDuration(latest.snapshotLoadMs);
-  nodes.perfLatest.textContent = `${latest.action} ${latest.windowStartDate || ""} z${latest.zoom}`;
-  nodes.perfSnapshotLoad.textContent = loadLabel;
-  nodes.perfRender.textContent = `${formatDuration(latest.renderSyncMs)} (${formatFeatureCount(latest.renderedFeatureCount)} pts)`;
-  nodes.perfPaint.textContent = formatDuration(latest.paintReadyMs);
-  nodes.perfP95Paint.textContent = `${formatDuration(summary.p95PaintMs)} / ${summary.sampleCount}`;
-  nodes.perfLongTasks.textContent = `${state.performance.longTaskCount} (${formatDuration(state.performance.longTaskTotalMs)})`;
-}
-
-function isSlowPerformanceSample(sample) {
-  const settings = performanceSettings();
-  return (
-    Number(sample.paintReadyMs) >= (settings.slowPaintMs || 1000) ||
-    Number(sample.renderSyncMs) >= (settings.slowRenderMs || 300) ||
-    (!sample.cacheHit && Number(sample.snapshotLoadMs) >= (settings.slowSnapshotLoadMs || 1500))
-  );
-}
-
-function recordPerformanceSample(sample) {
-  if (!isPerformanceTrackingEnabled()) {
-    return;
-  }
-
-  const settings = performanceSettings();
-  const sampleLimit = Math.max(1, Number(settings.sampleLimit) || 80);
-  const enrichedSample = {
-    timestamp: new Date().toISOString(),
-    ...sample,
-  };
-
-  state.performance.samples.push(enrichedSample);
-  while (state.performance.samples.length > sampleLimit) {
-    state.performance.samples.shift();
-  }
-
-  persistPerformanceSamples();
-  updatePerformancePanel();
-  enqueuePerformanceTelemetry(enrichedSample);
-  pushFaroMeasurement(enrichedSample);
-
-  if (booleanSetting(settings.logSamples, false)) {
-    const log = isSlowPerformanceSample(enrichedSample) ? console.warn : console.debug;
-    if (log) {
-      log.call(console, "[OpenFire UI perf]", enrichedSample);
-    }
-  }
-}
-
-function schedulePerformanceSample(sample) {
-  if (!isPerformanceTrackingEnabled()) {
-    return;
-  }
-
-  const scheduledAt = performanceNow();
-  const interactionStartedAt = sample.interactionStartedAt || scheduledAt;
-  window.requestAnimationFrame(() => {
-    window.requestAnimationFrame(() => {
-      const paintedAt = performanceNow();
-      recordPerformanceSample({
-        ...sample,
-        paintReadyMs: paintedAt - interactionStartedAt,
-        frameWaitMs: paintedAt - scheduledAt,
-      });
-    });
-  });
-}
-
-function telemetryEndpoint() {
-  return performanceSettings().telemetryEndpoint || "";
-}
-
-function telemetryBatchSize() {
-  return Math.max(1, Number(performanceSettings().telemetryBatchSize) || 20);
-}
-
-function telemetryEvent(sample) {
-  return {
-    action: sample.action,
-    timestamp: sample.timestamp,
-    window_start_date: sample.windowStartDate,
-    zoom: sample.zoom,
-    source_label: sample.sourceLabel,
-    source_url: sample.sourceUrl,
-    display_mode: sample.displayMode,
-    cache_hit: sample.cacheHit,
-    total_feature_count: sample.totalFeatureCount,
-    rendered_feature_count: sample.renderedFeatureCount,
-    snapshot_load_ms: sample.snapshotLoadMs,
-    render_sync_ms: sample.renderSyncMs,
-    select_ms: sample.selectMs,
-    layer_swap_ms: sample.layerSwapMs,
-    paint_ready_ms: sample.paintReadyMs,
-    frame_wait_ms: sample.frameWaitMs,
-    long_task_count: state.performance.longTaskCount,
-    long_task_total_ms: state.performance.longTaskTotalMs,
-    web_vital_name: sample.webVitalName,
-    web_vital_id: sample.webVitalId,
-    web_vital_value: sample.webVitalValue,
-    web_vital_delta: sample.webVitalDelta,
-    web_vital_rating: sample.webVitalRating,
-    web_vital_navigation_type: sample.webVitalNavigationType,
-    error_type: sample.errorType,
-    error_message: sample.errorMessage,
-    error_source: sample.errorSource,
-    error_line: sample.errorLine,
-    error_column: sample.errorColumn,
-    error_stack_hash: sample.errorStackHash,
-  };
-}
-
-function telemetryPayload(events) {
-  const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection || {};
-  const settings = performanceSettings();
-  return {
-    schema_version: "ui_performance_v1",
-    session_id: state.performance.sessionId,
-    ui_variant: settings.uiVariant || "unknown",
-    app_version: settings.appVersion || "unknown",
-    page_path: window.location.pathname || "/",
-    viewport_width: window.innerWidth,
-    viewport_height: window.innerHeight,
-    device_pixel_ratio: window.devicePixelRatio || 1,
-    hardware_concurrency: navigator.hardwareConcurrency || null,
-    device_memory_gb: navigator.deviceMemory || null,
-    connection_effective_type: connection.effectiveType || null,
-    save_data: Boolean(connection.saveData),
-    events,
-  };
-}
-
-function finiteNumber(value) {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : null;
-}
-
-function truncateText(value, maxLength) {
-  const text = String(value || "");
-  if (text.length <= maxLength) {
-    return text;
-  }
-  return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
-}
-
-function hashText(value) {
-  const text = String(value || "");
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
-}
-
-function errorDetails(errorLike) {
-  if (errorLike instanceof Error) {
-    return {
-      type: errorLike.name || "Error",
-      message: errorLike.message || "Unhandled error",
-      stack: errorLike.stack || "",
-    };
-  }
-  if (typeof errorLike === "string") {
-    return { type: "Error", message: errorLike, stack: "" };
-  }
-  return {
-    type: errorLike?.name || "Error",
-    message: errorLike?.message || String(errorLike || "Unhandled error"),
-    stack: errorLike?.stack || "",
-  };
-}
-
-function recordBrowserError(details) {
-  if (!isPerformanceTrackingEnabled()) {
-    return;
-  }
-
-  enqueuePerformanceTelemetry({
-    action: "browser-error",
-    timestamp: new Date().toISOString(),
-    windowStartDate: state.windows[state.activeIndex]?.window_start_date || null,
-    zoom: map.getZoom(),
-    sourceLabel: details.kind || "browser-error",
-    errorType: truncateText(details.type, 128),
-    errorMessage: truncateText(details.message, 512),
-    errorSource: truncateText(details.source, 2048),
-    errorLine: Number.isFinite(details.line) ? details.line : null,
-    errorColumn: Number.isFinite(details.column) ? details.column : null,
-    errorStackHash: details.stack ? hashText(details.stack) : null,
-  });
-}
-
-function buildFaroMeasurement(sample) {
-  const values = {
-    snapshot_load_ms: finiteNumber(sample.snapshotLoadMs),
-    render_sync_ms: finiteNumber(sample.renderSyncMs),
-    select_ms: finiteNumber(sample.selectMs),
-    layer_swap_ms: finiteNumber(sample.layerSwapMs),
-    paint_ready_ms: finiteNumber(sample.paintReadyMs),
-    frame_wait_ms: finiteNumber(sample.frameWaitMs),
-    total_feature_count: finiteNumber(sample.totalFeatureCount),
-    rendered_feature_count: finiteNumber(sample.renderedFeatureCount),
-    zoom: finiteNumber(sample.zoom),
-    long_task_count: finiteNumber(state.performance.longTaskCount),
-    long_task_total_ms: finiteNumber(state.performance.longTaskTotalMs),
-  };
-
-  Object.keys(values).forEach((key) => {
-    if (values[key] === null) {
-      delete values[key];
-    }
-  });
-
-  return {
-    type: "openfire_ui_interaction",
-    values,
-    context: {
-      action: sample.action || "unknown",
-      ui_variant: performanceSettings().uiVariant || "unknown",
-      app_version: performanceSettings().appVersion || "unknown",
-      window_start_date: sample.windowStartDate || "unknown",
-      source_label: sample.sourceLabel || "unknown",
-      display_mode: sample.displayMode || "unknown",
-      cache_hit: String(Boolean(sample.cacheHit)),
-    },
-  };
-}
-
-function pushFaroMeasurement(sample) {
-  const settings = faroSettings();
-  if (!booleanSetting(settings.enabled, false) || !settings.collectorUrl) {
-    return;
-  }
-
-  const measurement = buildFaroMeasurement(sample);
-  if (!Object.keys(measurement.values).length) {
-    return;
-  }
-
-  if (!state.performance.faroReady || !state.performance.faro?.api?.pushMeasurement) {
-    state.performance.faroMeasurementQueue.push(measurement);
-    while (state.performance.faroMeasurementQueue.length > 50) {
-      state.performance.faroMeasurementQueue.shift();
-    }
-    return;
-  }
-
-  state.performance.faro.api.pushMeasurement(
-    { type: measurement.type, values: measurement.values },
-    { context: measurement.context }
-  );
-}
-
-function flushFaroMeasurements() {
-  if (!state.performance.faroReady || !state.performance.faro?.api?.pushMeasurement) {
-    return;
-  }
-
-  const queued = state.performance.faroMeasurementQueue.splice(0);
-  queued.forEach((measurement) => {
-    state.performance.faro.api.pushMeasurement(
-      { type: measurement.type, values: measurement.values },
-      { context: measurement.context }
-    );
-  });
-}
-
-function enqueuePerformanceTelemetry(sample) {
-  if (!isPerformanceTrackingEnabled() || !telemetryEndpoint() || !state.performance.sessionId) {
-    return;
-  }
-
-  state.performance.telemetryQueue.push(telemetryEvent(sample));
-  if (state.performance.telemetryQueue.length >= telemetryBatchSize()) {
-    flushPerformanceTelemetry();
-  }
-}
-
-function removeFlushedTelemetryEvents(count) {
-  state.performance.telemetryQueue.splice(0, count);
-}
-
-async function flushPerformanceTelemetry({ useBeacon = false } = {}) {
-  if (
-    !isPerformanceTrackingEnabled() ||
-    !telemetryEndpoint() ||
-    !state.performance.telemetryQueue.length ||
-    state.performance.telemetryFlushInFlight ||
-    window.location.protocol === "file:"
-  ) {
-    return;
-  }
-
-  const batch = state.performance.telemetryQueue.slice(0, telemetryBatchSize());
-  const payload = JSON.stringify(telemetryPayload(batch));
-
-  if (useBeacon && navigator.sendBeacon) {
-    const accepted = navigator.sendBeacon(
-      telemetryEndpoint(),
-      new Blob([payload], { type: "application/json" })
-    );
-    if (accepted) {
-      removeFlushedTelemetryEvents(batch.length);
-    }
-    return;
-  }
-
-  state.performance.telemetryFlushInFlight = true;
-  try {
-    const response = await fetch(telemetryEndpoint(), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: payload,
-      keepalive: true,
-    });
-    if (response.ok) {
-      removeFlushedTelemetryEvents(batch.length);
-    }
-  } catch (error) {
-    // Keep queued events for the next interval.
-  } finally {
-    state.performance.telemetryFlushInFlight = false;
-  }
-}
-
-function bindPerformanceTelemetry() {
-  if (!isPerformanceTrackingEnabled() || !telemetryEndpoint()) {
-    return;
-  }
-
-  const intervalMs = Math.max(1000, Number(performanceSettings().telemetryFlushIntervalMs) || 10000);
-  state.performance.telemetryTimer = window.setInterval(() => {
-    flushPerformanceTelemetry();
-  }, intervalMs);
-
-  window.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") {
-      flushPerformanceTelemetry({ useBeacon: true });
-    }
-  });
-  window.addEventListener("pagehide", () => {
-    flushPerformanceTelemetry({ useBeacon: true });
-  });
-}
-
-function bindPerformanceObservers() {
-  if (!isPerformanceTrackingEnabled() || !("PerformanceObserver" in window)) {
-    return;
-  }
-
-  try {
-    const observer = new PerformanceObserver((list) => {
-      const threshold = Number(performanceSettings().longTaskMs) || 50;
-      list.getEntries().forEach((entry) => {
-        if (entry.duration < threshold) {
-          return;
-        }
-        state.performance.longTaskCount += 1;
-        state.performance.longTaskTotalMs += entry.duration;
-        state.performance.lastLongTaskMs = entry.duration;
-      });
-      updatePerformancePanel();
-    });
-    observer.observe({ entryTypes: ["longtask"] });
-    state.performance.longTaskObserver = observer;
-  } catch (error) {
-    state.performance.longTaskObserver = null;
-  }
-}
-
-function initializeFaroTelemetry() {
-  const settings = faroSettings();
-  if (
-    !isPerformanceTrackingEnabled() ||
-    !booleanSetting(settings.enabled, false) ||
-    !settings.collectorUrl
-  ) {
-    return;
-  }
-
-  loadExternalScript(settings.scriptUrl, "GrafanaFaroWebSdk")
-    .then((sdk) => {
-      if (!sdk?.initializeFaro) {
-        throw new Error("Grafana Faro SDK did not expose initializeFaro.");
+function isPointInsideMask(lat, lon, mask) {
+  if (!mask || !Array.isArray(mask.features) || mask.features.length === 0) return true;
+  for (let f = 0; f < mask.features.length; f += 1) {
+    const geom = mask.features[f].geometry;
+    if (!geom) continue;
+    if (geom.type === "Polygon") {
+      if (_polygonContainsPoint(geom.coordinates, lat, lon)) return true;
+    } else if (geom.type === "MultiPolygon") {
+      for (let p = 0; p < geom.coordinates.length; p += 1) {
+        if (_polygonContainsPoint(geom.coordinates[p], lat, lon)) return true;
       }
-      state.performance.faro = sdk.initializeFaro({
-        url: settings.collectorUrl,
-        app: {
-          name: settings.appName || "openfire-ui-socal",
-          version: settings.appVersion || performanceSettings().appVersion || "socal-ui",
-          namespace: settings.appNamespace || "openfire",
-          environment: settings.environment || "production",
-        },
-      });
-      state.performance.faroReady = true;
-      flushFaroMeasurements();
-    })
-    .catch((error) => {
-      state.performance.faroReady = false;
-      console.warn("[OpenFire UI perf] Grafana Faro disabled:", error);
-    });
+    }
+  }
+  return false;
 }
 
-function recordWebVitalMetric(metric) {
-  if (!metric?.name) {
-    return;
+function applyLandMaskToSnapshot(snapshot) {
+  if (!snapshot || snapshot._landFiltered) return snapshot;
+  const aoi = state.aoi;
+  const land = state.landMask;
+  if (!aoi && !land) return snapshot;
+  const features = snapshot.features || [];
+  const filtered = [];
+  for (let i = 0; i < features.length; i += 1) {
+    const coords = features[i].geometry?.coordinates;
+    if (!coords) continue;
+    const lon = coords[0];
+    const lat = coords[1];
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const inAoi = aoi ? isPointInsideMask(lat, lon, aoi) : true;
+    const onLand = land ? isPointInsideMask(lat, lon, land) : true;
+    if (inAoi && onLand) filtered.push(features[i]);
   }
+  snapshot.features = filtered;
+  snapshot._landFiltered = true;
+  return snapshot;
+}
 
-  const windowEntry = state.windows[state.activeIndex] || {};
-  enqueuePerformanceTelemetry({
-    action: "web-vital",
-    timestamp: new Date().toISOString(),
-    windowStartDate: windowEntry.window_start_date || null,
-    zoom: map.getZoom(),
-    sourceLabel: "web-vitals",
-    webVitalName: metric.name,
-    webVitalId: metric.id,
-    webVitalValue: metric.value,
-    webVitalDelta: metric.delta,
-    webVitalRating: metric.rating,
-    webVitalNavigationType: metric.navigationType,
+// ── deck.gl overlay layer construction ──────────────────────────────────
+
+function buildAoiCoverLayer() {
+  // Cover polygon = SoCal bbox MINUS land. Holes are the Natural Earth
+  // land polygons (mainland + Catalina + San Clemente + Channel Islands +
+  // any other land in the bbox). Result: the cover paints ONLY over
+  // water — hides any heatmap kernel bleed from coastal land cells while
+  // leaving every land area completely uncovered (basemap fully visible,
+  // heat shows where data exists).
+  if (!deckApi.SolidPolygonLayer || !state.landMask) return null;
+  // Outer rings of GeoJSON polygons are CCW (per RFC 7946); to use them as
+  // HOLES in deck.gl's SolidPolygonLayer we need them in CW (opposite
+  // winding). With non-zero fill rule (used by some WebGL backends) a
+  // same-winding "hole" is treated as additive area instead of a hole —
+  // that's what made every land area outside the AOI disappear in some
+  // browsers. Reversing the rings here ensures the hole is unambiguous
+  // under both non-zero and even-odd fill rules.
+  const holes = [];
+  for (const feature of state.landMask.features) {
+    const g = feature.geometry;
+    if (!g) continue;
+    if (g.type === "Polygon") {
+      holes.push([...g.coordinates[0]].reverse());
+    } else if (g.type === "MultiPolygon") {
+      for (const poly of g.coordinates) holes.push([...poly[0]].reverse());
+    }
+  }
+  // Outer ring (CCW) covering the western-US bbox the land mask was clipped
+  // to. Wide enough that the bbox edge is off-screen at any zoom centered
+  // on SoCal — eliminates the visible rectangular cutout where the cover
+  // ends. Land rings inside (from the mask) are holes (CW) and stay
+  // uncovered.
+  const outer = [
+    [-130, 28],
+    [-110, 28],
+    [-110, 42],
+    [-130, 42],
+    [-130, 28],
+  ];
+  return new deckApi.SolidPolygonLayer({
+    id: "openfire-water-cover",
+    data: [{ polygon: [outer, ...holes] }],
+    pickable: false,
+    filled: true,
+    stroked: false,
+    getPolygon: (d) => d.polygon,
+    // Match OpenFreeMap Positron's water color exactly (rgb(194,200,202)
+    // pulled from the style JSON's "water" layer paint). This makes the
+    // covered water visually indistinguishable from the basemap water,
+    // while still hiding any heat-kernel bleed underneath.
+    getFillColor: [194, 200, 202, 255],
+    parameters: { depthTest: false },
   });
 }
 
-function bindWebVitals() {
-  const settings = webVitalsSettings();
-  if (!isPerformanceTrackingEnabled() || !booleanSetting(settings.enabled, true)) {
-    return;
-  }
-
-  loadExternalScript(settings.scriptUrl, "webVitals")
-    .then((webVitals) => {
-      ["onCLS", "onFCP", "onINP", "onLCP", "onTTFB"].forEach((methodName) => {
-        if (typeof webVitals?.[methodName] === "function") {
-          webVitals[methodName](recordWebVitalMetric);
-        }
-      });
-    })
-    .catch((error) => {
-      console.warn("[OpenFire UI perf] Web Vitals disabled:", error);
-    });
-}
-
-function bindBrowserErrorTelemetry() {
-  if (!isPerformanceTrackingEnabled()) {
-    return;
-  }
-
-  window.addEventListener("error", (event) => {
-    const detail = errorDetails(event.error || event.message);
-    recordBrowserError({
-      kind: "window-error",
-      type: detail.type,
-      message: detail.message,
-      stack: detail.stack,
-      source: event.filename || "",
-      line: event.lineno,
-      column: event.colno,
-    });
-  });
-
-  window.addEventListener("unhandledrejection", (event) => {
-    const detail = errorDetails(event.reason);
-    recordBrowserError({
-      kind: "unhandledrejection",
-      type: detail.type,
-      message: detail.message,
-      stack: detail.stack,
-      source: "promise",
-      line: null,
-      column: null,
-    });
+function buildHeatmapLayer() {
+  if (!deckApi.HeatmapLayer) return null;
+  const zoom = map.getZoom();
+  // NOTE: deck.gl's MaskExtension does not work with HeatmapLayer (the
+  // mask_texture binding doesn't propagate through HeatmapLayer's internal
+  // weight-aggregation transforms — same limitation as on Leaflet).
+  //
+  // Water-clipping strategy: the overlay runs in interleaved mode so the
+  // heatmap's `beforeId` places it underneath the basemap's water layer in
+  // the MapLibre layer stack. The basemap's own water polygons therefore
+  // paint over any kernel bleed into the ocean — we get pixel-perfect
+  // water masking for free, no custom geometry required.
+  return new deckApi.HeatmapLayer({
+    id: "openfire-risk-heat",
+    data: state.activeFeatures,
+    pickable: false,
+    getPosition: (f) => f.geometry?.coordinates || [0, 0],
+    getWeight: (f) => Number(f.properties?.risk_probability ?? 0),
+    radiusPixels: heatmapRadiusForZoom(zoom),
+    aggregation: "MEAN",
+    intensity: HEATMAP_INTENSITY,
+    threshold: HEATMAP_THRESHOLD,
+    colorRange: config.riskGradient,
+    colorDomain: [0, 1],
+    beforeId: state.waterBeforeId || undefined,
+    updateTriggers: { radiusPixels: Math.round(zoom * 2) },
   });
 }
 
-function installPerformanceExport() {
-  if (!isPerformanceTrackingEnabled()) {
-    return;
-  }
-
-  window.OPENFIRE_SOCAL_PERFORMANCE = {
-    getSamples() {
-      return [...state.performance.samples];
-    },
-    getSummary() {
-      return summarizePerformanceSamples();
-    },
-    getPendingTelemetry() {
-      return [...state.performance.telemetryQueue];
-    },
-    getFaroStatus() {
-      return {
-        enabled: booleanSetting(faroSettings().enabled, false) && Boolean(faroSettings().collectorUrl),
-        ready: state.performance.faroReady,
-        queuedMeasurements: state.performance.faroMeasurementQueue.length,
-      };
-    },
-    flushTelemetry() {
-      return flushPerformanceTelemetry();
-    },
-    clear() {
-      state.performance.samples = [];
-      state.performance.telemetryQueue = [];
-      state.performance.longTaskCount = 0;
-      state.performance.longTaskTotalMs = 0;
-      state.performance.lastLongTaskMs = 0;
-      persistPerformanceSamples();
-      updatePerformancePanel();
-    },
-  };
+function buildPickerLayer() {
+  // Invisible ScatterplotLayer for hover-picking the original cells. The
+  // HeatmapLayer is a texture, so it has no per-feature picking — we layer
+  // a transparent ScatterplotLayer so deck.gl's pickObject finds cells.
+  // No beforeId — picker stays on top of all basemap layers so hover works
+  // anywhere in the AOI even where water would otherwise occlude the heat.
+  return new deckApi.ScatterplotLayer({
+    id: "openfire-risk-picker",
+    data: state.activeFeatures,
+    pickable: true,
+    stroked: false,
+    filled: true,
+    radiusUnits: "meters",
+    radiusMinPixels: 4,
+    parameters: { depthTest: false },
+    getPosition: (f) => f.geometry?.coordinates || [0, 0],
+    getRadius: 700,
+    getFillColor: [0, 0, 0, 0],
+  });
 }
+
+function rebuildOverlay() {
+  if (!state.overlay) return;
+  // No cover/mask polygon — different WebGL backends interpret the
+  // polygon-with-holes fill rule inconsistently (some treat the inner
+  // rings as additive area instead of holes, wiping out the entire
+  // rest-of-the-US-basemap outside the AOI). Heat data is already
+  // filtered to AOI ∩ land cells, so there's nothing off-shore to mask;
+  // the only visible bleed is a soft kernel tail clipped by the
+  // HEATMAP_THRESHOLD constant in buildHeatmapLayer.
+  const layers = [];
+  const heat = buildHeatmapLayer();
+  if (heat) layers.push(heat);
+  layers.push(buildPickerLayer());
+  state.overlay.setProps({ layers });
+}
+
+// ── Tooltip on hover ────────────────────────────────────────────────────
 
 function tooltipHtml(feature) {
-  const properties = feature.properties || {};
-  const probability = Number(properties.risk_probability ?? 0);
-  const band = getBand(probability);
+  const props = feature?.properties || {};
+  const probability = Number(props.risk_probability ?? 0);
+  const pct = Number.isFinite(probability) ? `${(probability * 100).toFixed(1)}%` : "—";
+  const date = props.window_start_date ? new Date(`${props.window_start_date}T00:00:00`).toLocaleDateString() : "—";
   return `
     <div class="tooltip-grid">
-      <strong>${band.label}</strong>
-      <span>Risk probability: ${formatProbability(probability)}</span>
-      <span>Window: ${properties.window_start_date ?? "n/a"}</span>
-      <span>Predicted label: ${properties.predicted_label ?? "n/a"}</span>
-      <span>Model version: ${properties.model_version ?? "n/a"}</span>
+      <strong>Risk: ${pct}</strong>
+      <span>Window: ${date}</span>
+      <span>Model: ${(props.model_version || "n/a").toString().slice(0, 24)}</span>
     </div>
   `;
 }
 
-function activeLowZoomTier() {
-  const settings = config.lowZoomPerformance || {};
-  if (!settings.enabled) {
-    return null;
-  }
-
-  const zoom = map.getZoom();
-  const tiers = Array.isArray(settings.tiers) && settings.tiers.length
-    ? settings.tiers
-    : [settings];
-  return tiers
-    .filter((tier) => zoom <= (tier.maxZoom || 7))
-    .sort((a, b) => (a.maxZoom || 7) - (b.maxZoom || 7))[0] || null;
-}
-
-function featureSortKey(feature, fallbackIndex) {
-  const coordinates = feature.geometry?.coordinates || [];
-  const longitude = Number(coordinates[0]);
-  const latitude = Number(coordinates[1]);
-  return {
-    latitude: Number.isFinite(latitude) ? latitude : Number.NEGATIVE_INFINITY,
-    longitude: Number.isFinite(longitude) ? longitude : Number.POSITIVE_INFINITY,
-    fallbackIndex,
-  };
-}
-
-function selectDisplayFeatures(features) {
-  if (state.activeSnapshotPrecomputed) {
-    return {
-      features,
-      mode: `precomputed:${state.activeSnapshotUri}`,
-    };
-  }
-
-  const tier = activeLowZoomTier();
-  const sampleStride = Math.max(1, Number(tier?.sampleStride) || 1);
-  if (!tier || sampleStride === 1) {
-    return {
-      features,
-      mode: "full",
-    };
-  }
-
-  const sampleOffset = Math.min(
-    sampleStride - 1,
-    Math.max(0, Number(tier.sampleOffset ?? Math.floor(sampleStride / 2)))
-  );
-  const orderedFeatures = features
-    .map((feature, index) => ({ feature, sortKey: featureSortKey(feature, index) }))
-    .sort((a, b) => (
-      b.sortKey.latitude - a.sortKey.latitude ||
-      a.sortKey.longitude - b.sortKey.longitude ||
-      a.sortKey.fallbackIndex - b.sortKey.fallbackIndex
-    ))
-    .map((item) => item.feature);
-
-  return {
-    features: orderedFeatures.filter((_, index) => index % sampleStride === sampleOffset),
-    mode: `low-sampled-${sampleStride}-${sampleOffset}`,
-  };
-}
-
-function renderAoi(aoi) {
-  const boundaryLayer = L.geoJSON(aoi, {
-    pane: "aoiPane",
-    style: {
-      color: "#24392f",
-      weight: 2.4,
-      fillColor: "#ffffff",
-      fillOpacity: 0.08,
-      opacity: 0.9,
-      pane: "aoiPane",
-    },
-  }).addTo(map);
-
-  const labelLayer = L.layerGroup();
-  aoi.features.forEach((feature) => {
-    const name = feature.properties?.NAME || feature.properties?.NAMELSAD;
-    const layer = L.geoJSON(feature);
-    const center = layer.getBounds().getCenter();
-    L.marker(center, {
-      interactive: false,
-      pane: "labelPane",
-      icon: L.divIcon({
-        className: "county-label",
-        html: `<span>${name}</span>`,
-      }),
-    }).addTo(labelLayer);
-  });
-  labelLayer.addTo(map);
-
-  const bounds = boundaryLayer.getBounds();
-  if (bounds.isValid()) {
-    map.fitBounds(bounds.pad(0.05));
-  }
-
-  return boundaryLayer;
-}
-
-const DeckRiskLayer = L.Layer.extend({
-  options: {
-    pane: "riskPane",
-  },
-
-  initialize(features = []) {
-    this._features = features;
-    this._deck = null;
-    this._container = null;
-    this._canvas = null;
-    this._tooltip = null;
-  },
-
-  onAdd(activeMap) {
-    this._map = activeMap;
-    this._container = L.DomUtil.create("div", "deckgl-risk-layer");
-    this._canvas = L.DomUtil.create("canvas", "deckgl-risk-canvas", this._container);
-    this.getPane().appendChild(this._container);
-    this._tooltip = L.DomUtil.create("div", "deckgl-risk-tooltip", activeMap.getContainer());
-    this._tooltip.hidden = true;
-
-    this._deck = new deckApi.Deck({
-      canvas: this._canvas,
-      controller: false,
-      views: [new deckApi.MapView({ repeat: true })],
-      viewState: this._viewState(),
-      layers: [],
-      useDevicePixels: true,
-    });
-
-    activeMap.on("move zoom resize", this._update, this);
-    activeMap.on("mousemove", this._handleMouseMove, this);
-    activeMap.on("mouseout zoomstart", this._hideTooltip, this);
-    this._update();
-    this._updateLayers();
-  },
-
-  onRemove(activeMap) {
-    activeMap.off("move zoom resize", this._update, this);
-    activeMap.off("mousemove", this._handleMouseMove, this);
-    activeMap.off("mouseout zoomstart", this._hideTooltip, this);
-    if (this._deck) {
-      this._deck.finalize();
-      this._deck = null;
-    }
-    if (this._container) {
-      L.DomUtil.remove(this._container);
-      this._container = null;
-    }
-    if (this._tooltip) {
-      L.DomUtil.remove(this._tooltip);
-      this._tooltip = null;
-    }
-  },
-
-  setFeatures(features) {
-    this._features = features;
-    this._updateLayers();
-  },
-
-  refreshStyle() {
-    this._updateLayers();
-  },
-
-  _deckZoom() {
-    // Leaflet's OSM tile pyramid uses 256 px tiles; deck.gl's WebMercator
-    // viewport is Mapbox-compatible at 512 px tiles, so subtract one zoom.
-    return (this._map?.getZoom() || config.map.zoom || 7) - 1;
-  },
-
-  _viewState() {
-    const center = this._map.getCenter();
-    return {
-      longitude: center.lng,
-      latitude: center.lat,
-      zoom: this._deckZoom(),
-      pitch: 0,
-      bearing: 0,
-    };
-  },
-
-  _update() {
-    if (!this._map || !this._container || !this._deck) {
+function bindHoverTooltip() {
+  const tooltip = document.getElementById("map-tooltip");
+  if (!tooltip) return;
+  map.getCanvas().addEventListener("mousemove", (event) => {
+    if (!state.overlay) {
+      tooltip.hidden = true;
       return;
     }
-    const size = this._map.getSize();
-    const topLeft = this._map.containerPointToLayerPoint([0, 0]);
-    L.DomUtil.setPosition(this._container, topLeft);
-    this._container.style.width = `${size.x}px`;
-    this._container.style.height = `${size.y}px`;
-    this._deck.setProps({
-      width: size.x,
-      height: size.y,
-      viewState: this._viewState(),
-    });
-  },
-
-  _buildScatterplotLayer() {
-    const zoom = this._map?.getZoom() || config.map.zoom || 7;
-    return new deckApi.ScatterplotLayer({
-      id: "openfire-risk-points",
-      data: this._features,
-      pickable: true,
-      stroked: true,
-      filled: true,
-      radiusUnits: "pixels",
-      lineWidthUnits: "pixels",
-      radiusMinPixels: 1,
-      radiusMaxPixels: 8,
-      lineWidthMinPixels: 0.4,
-      lineWidthMaxPixels: 2,
-      parameters: {
-        depthTest: false,
-      },
-      getPosition: (feature) => feature.geometry?.coordinates || [0, 0],
-      getRadius: (feature) => pointDeckStyle(feature).radius,
-      getFillColor: (feature) => pointDeckStyle(feature).fillColor,
-      getLineColor: (feature) => pointDeckStyle(feature).lineColor,
-      getLineWidth: (feature) => pointDeckStyle(feature).lineWidth,
-      updateTriggers: {
-        getRadius: zoom,
-        getFillColor: zoom,
-        getLineColor: zoom,
-        getLineWidth: zoom,
-      },
-    });
-  },
-
-  _updateLayers() {
-    if (!this._deck) {
-      return;
-    }
-    this._deck.setProps({
-      layers: [this._buildScatterplotLayer()],
-    });
-  },
-
-  _handleMouseMove(event) {
-    if (!this._deck || !this._tooltip) {
-      return;
-    }
-    const point = this._map.mouseEventToContainerPoint(event.originalEvent);
-    const info = this._deck.pickObject({
-      x: point.x,
-      y: point.y,
-      radius: 6,
-    });
+    const rect = map.getCanvas().getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const info = state.overlay.pickObject({ x, y, radius: 6 });
     if (!info?.object) {
-      this._hideTooltip();
+      tooltip.hidden = true;
       return;
     }
-    this._tooltip.innerHTML = tooltipHtml(info.object);
-    this._tooltip.style.transform = `translate(${point.x + 14}px, ${point.y + 14}px)`;
-    this._tooltip.hidden = false;
-  },
-
-  _hideTooltip() {
-    if (this._tooltip) {
-      this._tooltip.hidden = true;
-    }
-  },
-});
-
-function ensureDeckRiskLayer() {
-  if (!state.riskLayer) {
-    state.riskLayer = new DeckRiskLayer();
-    state.riskLayer.addTo(map);
-  }
-  return state.riskLayer;
+    tooltip.innerHTML = tooltipHtml(info.object);
+    tooltip.style.transform = `translate(${event.clientX + 14}px, ${event.clientY + 14}px)`;
+    tooltip.hidden = false;
+  });
+  map.getCanvas().addEventListener("mouseleave", () => {
+    tooltip.hidden = true;
+  });
 }
 
-function restyleRiskLayer() {
-  if (state.riskLayer) {
-    state.riskLayer.refreshStyle();
+// ── AOI overlay (county outlines + labels) ──────────────────────────────
+
+function renderAoi() {
+  if (!state.aoi || !map.isStyleLoaded()) return;
+  const sourceId = "aoi-source";
+  if (!map.getSource(sourceId)) {
+    map.addSource(sourceId, { type: "geojson", data: state.aoi });
+  } else {
+    map.getSource(sourceId).setData(state.aoi);
   }
-}
-
-function replaceRiskLayer(features) {
-  const layer = ensureDeckRiskLayer();
-  layer.setFeatures(features);
-}
-
-function renderActiveSnapshot({ force = false, perfContext = null } = {}) {
-  const features = state.activeSnapshot?.features || [];
-  if (!features.length) {
-    return false;
+  // (Black AOI line layer removed — the water cover gives an implicit
+  // boundary because heat is only shown over land within the AOI cells'
+  // bbox. A hard outline is unnecessary and visually heavy.)
+  // County labels at polygon centroid
+  const labelFeatures = state.aoi.features
+    .map((feature) => {
+      const name = feature.properties?.NAME;
+      if (!name) return null;
+      const center = featureCentroid(feature);
+      if (!center) return null;
+      return {
+        type: "Feature",
+        geometry: { type: "Point", coordinates: center },
+        properties: { name },
+      };
+    })
+    .filter(Boolean);
+  const labelSourceId = "aoi-label-source";
+  const labelData = { type: "FeatureCollection", features: labelFeatures };
+  if (!map.getSource(labelSourceId)) {
+    map.addSource(labelSourceId, { type: "geojson", data: labelData });
+  } else {
+    map.getSource(labelSourceId).setData(labelData);
   }
-
-  const renderStartedAt = performanceNow();
-  const selectStartedAt = renderStartedAt;
-  const display = selectDisplayFeatures(features);
-  const selectMs = performanceNow() - selectStartedAt;
-  const signature = `${display.mode}:${display.features.length}`;
-  if (!force && signature === state.renderSignature) {
-    return false;
-  }
-
-  state.renderSignature = signature;
-  state.renderedFeatureCount = display.features.length;
-  const layerStartedAt = performanceNow();
-  replaceRiskLayer(display.features);
-  const layerSwapMs = performanceNow() - layerStartedAt;
-  const renderSyncMs = performanceNow() - renderStartedAt;
-
-  if (perfContext) {
-    schedulePerformanceSample({
-      ...perfContext,
-      displayMode: `${DECK_RENDERER_LABEL}:${display.mode}`,
-      totalFeatureCount: features.length,
-      renderedFeatureCount: display.features.length,
-      selectMs,
-      layerSwapMs,
-      renderSyncMs,
+  if (!map.getLayer("aoi-labels")) {
+    map.addLayer({
+      id: "aoi-labels",
+      type: "symbol",
+      source: labelSourceId,
+      layout: {
+        "text-field": ["get", "name"],
+        "text-size": 12,
+        "text-font": ["Noto Sans Bold", "Open Sans Bold", "Arial Unicode MS Bold"],
+        "text-anchor": "center",
+        "text-allow-overlap": false,
+      },
+      paint: {
+        "text-color": "#1e2b26",
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 1.4,
+      },
     });
   }
-
-  return true;
 }
+
+function featureCentroid(feature) {
+  const g = feature.geometry;
+  if (!g) return null;
+  const ring = g.type === "Polygon"
+    ? g.coordinates[0]
+    : g.type === "MultiPolygon"
+      ? largestRing(g.coordinates)
+      : null;
+  if (!ring) return null;
+  let sumLon = 0, sumLat = 0, count = 0;
+  for (const [lon, lat] of ring) {
+    sumLon += lon;
+    sumLat += lat;
+    count += 1;
+  }
+  return count > 0 ? [sumLon / count, sumLat / count] : null;
+}
+
+function largestRing(polygons) {
+  let best = null;
+  let bestArea = -Infinity;
+  for (const polygon of polygons) {
+    const ring = polygon[0];
+    if (!ring) continue;
+    let a = 0;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+      a += (ring[j][0] + ring[i][0]) * (ring[j][1] - ring[i][1]);
+    }
+    a = Math.abs(a) * 0.5;
+    if (a > bestArea) {
+      bestArea = a;
+      best = ring;
+    }
+  }
+  return best;
+}
+
+// ── Snapshot loading + timeline ─────────────────────────────────────────
 
 function normalizeWindows(manifest) {
-  const rawWindows = Array.isArray(manifest.windows) && manifest.windows.length
-    ? manifest.windows
-    : [
-        {
-          window_start_date: manifest.latest_window_start_date,
-          geojson_uri: manifest.latest_geojson_uri,
-          geojson_variants: manifest.latest_geojson_variants || {},
-          model_version: manifest.model_version,
-          updated_at: manifest.updated_at,
-        },
-      ];
-  const excludedWindowStartDates = new Set(config.excludedWindowStartDates || []);
-  return rawWindows
-    .filter((item) => item.window_start_date && item.geojson_uri)
-    .filter((item) => !excludedWindowStartDates.has(String(item.window_start_date)))
-    .map((item) => ({
-      window_start_date: String(item.window_start_date),
-      geojson_uri: item.geojson_uri,
-      geojson_variants: item.geojson_variants || {},
-      model_version: item.model_version || manifest.model_version || "Unavailable",
-      updated_at: item.updated_at || manifest.updated_at || "",
-    }))
+  const excluded = new Set(config.excludedWindowStartDates || []);
+  return (manifest.windows || [])
+    .filter((entry) => entry?.window_start_date && !excluded.has(entry.window_start_date))
     .sort((a, b) => a.window_start_date.localeCompare(b.window_start_date));
 }
 
-function cacheSet(key, value) {
-  if (state.cache.has(key)) {
-    state.cache.delete(key);
-  }
-  state.cache.set(key, value);
-  while (state.cache.size > (config.snapshotCacheSize || 8)) {
-    state.cache.delete(state.cache.keys().next().value);
-  }
-}
-
 function selectSnapshotSource(windowEntry) {
-  const tier = activeLowZoomTier();
-  const variantKey = tier?.variantKey;
-  const variant = variantKey ? windowEntry.geojson_variants?.[variantKey] : null;
-  const tierLabel = variantKey === "low"
-    ? "z8"
-    : variantKey === "medium"
-      ? "z9"
-      : tier
-        ? `z<=${tier.maxZoom || 7}`
-        : "full";
-  if (variant?.geojson_uri) {
-    return {
-      uri: variant.geojson_uri,
-      isPrecomputed: true,
-      renderLabel: `${tierLabel} precomputed`,
-    };
-  }
-  return {
-    uri: windowEntry.geojson_uri,
-    isPrecomputed: false,
-    renderLabel: tier ? `${tierLabel} client fallback` : "full snapshot",
-  };
+  const variants = windowEntry.geojson_variants || {};
+  // Prefer high-res for the heatmap; deck.gl handles 65k features fine.
+  const uri = windowEntry.geojson_uri || variants.medium?.geojson_uri || variants.low?.geojson_uri;
+  return { uri };
 }
 
-async function loadSnapshot(source) {
+async function loadSnapshot(windowEntry) {
+  const source = selectSnapshotSource(windowEntry);
+  if (!source.uri) throw new Error(`No snapshot URI for ${windowEntry.window_start_date}`);
   const url = resolveAssetUrl(source.uri);
-  const startedAt = performanceNow();
-  if (state.cache.has(url)) {
-    const cached = state.cache.get(url);
-    cacheSet(url, cached);
-    return {
-      payload: cached,
-      metrics: {
-        sourceUrl: url,
-        cacheHit: true,
-        snapshotLoadMs: 0,
-        snapshotFeatureCount: cached.features?.length || 0,
-      },
-    };
-  }
+  if (state.cache.has(url)) return state.cache.get(url);
   const payload = await fetchJson(url);
-  cacheSet(url, payload);
-  return {
-    payload,
-    metrics: {
-      sourceUrl: url,
-      cacheHit: false,
-      snapshotLoadMs: performanceNow() - startedAt,
-      snapshotFeatureCount: payload.features?.length || 0,
-    },
-  };
+  applyLandMaskToSnapshot(payload);
+  state.cache.set(url, payload);
+  // Cap cache size
+  while (state.cache.size > (config.snapshotCacheSize || 8)) {
+    const firstKey = state.cache.keys().next().value;
+    state.cache.delete(firstKey);
+  }
+  return payload;
 }
 
-function prefetchSnapshots(index, offsets = [-1, 1]) {
-  offsets.forEach((offset) => {
-    const candidate = index + offset;
-    if (candidate < 0 || candidate >= state.windows.length) {
-      return;
-    }
-    const source = selectSnapshotSource(state.windows[candidate]);
-    const url = resolveAssetUrl(source.uri);
-    if (!state.cache.has(url)) {
-      loadSnapshot(source).catch(() => undefined);
-    }
-  });
-}
-
-function updateMetadata(manifest, aoi, riskGeojson, windowEntry) {
-  const featureCount = riskGeojson.features?.length || 0;
-  const riskCount = riskGeojson.features?.filter(
-    (feature) => Number(feature.properties?.risk_probability ?? 0) >= 0.5
-  ).length || 0;
-  const renderedCount = state.renderedFeatureCount || featureCount;
-  const renderedSuffix = renderedCount < featureCount ? `, ${renderedCount.toLocaleString()} rendered` : "";
-
-  nodes.statusMeta.textContent = manifest.status || "live";
-  nodes.windowDate.textContent = windowEntry.window_start_date || manifest.latest_window_start_date || "Unavailable";
-  nodes.modelVersion.textContent = windowEntry.model_version || manifest.model_version || "Unavailable";
-  nodes.featureCount.textContent = `${featureCount.toLocaleString()} (${riskCount.toLocaleString()} elevated${renderedSuffix})`;
-  nodes.renderMode.textContent = `${state.activeSnapshotRenderLabel} (${DECK_RENDERER_LABEL})`;
-  nodes.countyCount.textContent = `${aoi.features?.length || 0}`;
-  nodes.source.textContent = manifest.source || "GCS prediction manifest";
-}
-
-function renderTimelineTicks() {
-  nodes.timelineTicks.innerHTML = "";
-  state.windows.forEach((windowEntry, index) => {
-    const tick = document.createElement("button");
-    tick.className = "timeline-tick";
-    tick.type = "button";
-    tick.title = formatDate(windowEntry.window_start_date);
-    tick.setAttribute("aria-label", `Load ${formatDate(windowEntry.window_start_date)}`);
-    tick.addEventListener("click", () => setActiveIndex(index));
-    nodes.timelineTicks.appendChild(tick);
-  });
-}
-
-function updateTimelineUi() {
-  nodes.slider.value = String(state.activeIndex);
-  nodes.timelineDate.textContent = formatDate(state.windows[state.activeIndex]?.window_start_date);
-  nodes.timelinePosition.textContent = `${state.activeIndex + 1} / ${state.windows.length}`;
-  [...nodes.timelineTicks.children].forEach((tick, index) => {
-    tick.classList.toggle("is-active", index === state.activeIndex);
-  });
+async function setActiveIndex(index) {
+  const boundedIndex = Math.max(0, Math.min(index, state.windows.length - 1));
+  const windowEntry = state.windows[boundedIndex];
+  if (!windowEntry) return;
+  state.activeIndex = boundedIndex;
+  const slider = document.getElementById("timeline-slider");
+  if (slider) slider.value = String(boundedIndex);
+  try {
+    const snapshot = await loadSnapshot(windowEntry);
+    state.activeWindow = windowEntry;
+    state.activeFeatures = snapshot.features || [];
+    rebuildOverlay();
+  } catch (error) {
+    console.error("Failed to load snapshot", error);
+  }
 }
 
 function configureTimeline() {
-  nodes.slider.min = "0";
-  nodes.slider.max = String(Math.max(state.windows.length - 1, 0));
-  nodes.slider.step = "1";
-  nodes.slider.disabled = state.windows.length < 2;
-  renderTimelineTicks();
-  updateTimelineUi();
+  const slider = document.getElementById("timeline-slider");
+  if (!slider) return;
+  slider.min = "0";
+  slider.max = String(Math.max(state.windows.length - 1, 0));
+  slider.step = "1";
+  slider.disabled = state.windows.length < 2;
+  slider.value = String(state.activeIndex);
 }
 
-async function setActiveIndex(index, { prefetch = true } = {}) {
-  const interactionStartedAt = performanceNow();
-  const boundedIndex = Math.max(0, Math.min(index, state.windows.length - 1));
-  const windowEntry = state.windows[boundedIndex];
-  if (!windowEntry) {
-    return;
-  }
-
-  state.activeIndex = boundedIndex;
-  updateTimelineUi();
-  setStatus(`Loading ${windowEntry.window_start_date} snapshot...`);
-  try {
-    const source = selectSnapshotSource(windowEntry);
-    const snapshot = await loadSnapshot(source);
-    const riskGeojson = snapshot.payload;
-    state.activeSnapshot = riskGeojson;
-    state.activeSnapshotUri = snapshot.metrics.sourceUrl;
-    state.activeSnapshotPrecomputed = source.isPrecomputed;
-    state.activeSnapshotRenderLabel = source.renderLabel;
-    state.renderSignature = "";
-    renderActiveSnapshot({
-      force: true,
-      perfContext: {
-        action: "snapshot",
-        interactionStartedAt,
-        windowStartDate: windowEntry.window_start_date,
-        zoom: map.getZoom(),
-        sourceLabel: source.renderLabel,
-        sourceUrl: snapshot.metrics.sourceUrl,
-        cacheHit: snapshot.metrics.cacheHit,
-        snapshotLoadMs: snapshot.metrics.snapshotLoadMs,
-      },
+function bindControls() {
+  bindCollapsiblePanels();
+  bindAddressLookup();
+  bindSubscribeForm();
+  const slider = document.getElementById("timeline-slider");
+  if (slider) {
+    slider.addEventListener("input", (event) => {
+      stopPlayback();
+      setActiveIndex(Number(event.target.value));
     });
-    updateMetadata(state.manifest, state.aoi, riskGeojson, windowEntry);
-    const renderedCount = state.renderedFeatureCount || riskGeojson.features.length;
-    const renderedSuffix = renderedCount < riskGeojson.features.length
-      ? ` Rendering ${renderedCount.toLocaleString()} at this zoom.`
-      : "";
-    setStatus(
-      `Loaded ${riskGeojson.features.length.toLocaleString()} risk features via ${source.renderLabel} on ${DECK_RENDERER_LABEL}.${renderedSuffix}`
-    );
-    if (prefetch) {
-      prefetchSnapshots(boundedIndex);
-    }
-  } catch (error) {
-    stopPlayback();
-    console.error(error);
-    setStatus(error instanceof Error ? error.message : "Failed to load snapshot.", true);
+  }
+  const playToggle = document.getElementById("playback-toggle");
+  if (playToggle) {
+    playToggle.addEventListener("click", togglePlayback);
   }
 }
+
+function bindCollapsiblePanels() {
+  document.querySelectorAll("[data-collapsible-panel]").forEach((panel) => {
+    const button = panel.querySelector(".panel-toggle");
+    const body = panel.querySelector(".panel-body");
+    if (!button || !body) return;
+    button.addEventListener("click", () => {
+      const expanded = button.getAttribute("aria-expanded") === "true";
+      button.setAttribute("aria-expanded", expanded ? "false" : "true");
+      body.hidden = expanded;
+    });
+  });
+}
+
+// ── Playback (auto-loop through the timeline) ───────────────────────────
 
 function stopPlayback() {
   if (state.playbackTimer) {
@@ -1479,151 +538,198 @@ function stopPlayback() {
     state.playbackTimer = null;
   }
   state.playbackLoading = false;
-  nodes.playbackToggle.textContent = "Play";
-  nodes.playbackToggle.setAttribute("aria-label", "Play timeline");
+  const playToggle = document.getElementById("playback-toggle");
+  if (playToggle) {
+    playToggle.textContent = "Play";
+    playToggle.setAttribute("aria-label", "Play timeline");
+  }
 }
 
 async function advancePlayback() {
-  if (state.playbackLoading) {
-    return;
-  }
+  if (state.playbackLoading) return;
   state.playbackLoading = true;
   try {
     const nextIndex = (state.activeIndex + 1) % state.windows.length;
-    await setActiveIndex(nextIndex, { prefetch: false });
-    prefetchSnapshots(nextIndex, [1, 2]);
+    await setActiveIndex(nextIndex);
   } finally {
     state.playbackLoading = false;
   }
 }
 
 function startPlayback() {
-  if (state.windows.length < 2 || state.playbackTimer) {
-    return;
+  if (state.windows.length < 2 || state.playbackTimer) return;
+  const playToggle = document.getElementById("playback-toggle");
+  if (playToggle) {
+    playToggle.textContent = "Pause";
+    playToggle.setAttribute("aria-label", "Pause timeline");
   }
-  nodes.playbackToggle.textContent = "Pause";
-  nodes.playbackToggle.setAttribute("aria-label", "Pause timeline");
-  prefetchSnapshots(state.activeIndex, [1, 2]);
   advancePlayback();
   state.playbackTimer = window.setInterval(advancePlayback, config.playbackIntervalMs || 750);
 }
 
 function togglePlayback() {
-  if (state.playbackTimer) {
-    stopPlayback();
-  } else {
-    startPlayback();
+  if (state.playbackTimer) stopPlayback();
+  else startPlayback();
+}
+
+// ── Address lookup (Nominatim) ──────────────────────────────────────────
+
+let _lastNominatimAt = 0;
+
+async function nominatimGeocode(query) {
+  const since = Date.now() - _lastNominatimAt;
+  if (since < 1100) {
+    await new Promise((resolve) => setTimeout(resolve, 1100 - since));
   }
-}
-
-function bindCollapsiblePanels() {
-  document.querySelectorAll("[data-collapsible-panel]").forEach((panel) => {
-    const toggle = panel.querySelector(".panel-toggle");
-    const body = toggle ? document.getElementById(toggle.getAttribute("aria-controls")) : null;
-    if (!toggle || !body) {
-      return;
-    }
-
-    const setExpanded = (isExpanded) => {
-      toggle.setAttribute("aria-expanded", String(isExpanded));
-      body.hidden = !isExpanded;
-    };
-
-    setExpanded(toggle.getAttribute("aria-expanded") === "true");
-    toggle.addEventListener("click", () => {
-      setExpanded(toggle.getAttribute("aria-expanded") !== "true");
+  _lastNominatimAt = Date.now();
+  const url =
+    "https://nominatim.openstreetmap.org/search?" +
+    new URLSearchParams({
+      format: "json",
+      limit: "1",
+      countrycodes: "us",
+      addressdetails: "1",
+      q: query,
     });
+  const response = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error(`Geocoding failed (${response.status})`);
+  return response.json();
+}
+
+function nearestRiskFeature(features, lat, lon) {
+  let best = null;
+  let bestDistance = Infinity;
+  for (let i = 0; i < features.length; i += 1) {
+    const coords = features[i].geometry?.coordinates;
+    if (!coords) continue;
+    const dlat = coords[1] - lat;
+    const dlon = coords[0] - lon;
+    const distance = dlat * dlat + dlon * dlon;
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = features[i];
+    }
+  }
+  return best;
+}
+
+function shortPlaceName(displayName) {
+  if (!displayName) return "";
+  return displayName.split(",").map((p) => p.trim()).filter(Boolean).slice(0, 2).join(", ");
+}
+
+function bindAddressLookup() {
+  const form = document.getElementById("address-form");
+  if (!form) return;
+  const input = document.getElementById("address-input");
+  const result = document.getElementById("address-result");
+  const submit = form.querySelector("button[type=submit]");
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    result.removeAttribute("data-state");
+    const query = input.value.trim();
+    if (!query) {
+      result.dataset.state = "err";
+      result.textContent = "Enter an address or place name.";
+      return;
+    }
+    submit.disabled = true;
+    result.textContent = "Looking up...";
+    try {
+      const hits = await nominatimGeocode(query);
+      if (!Array.isArray(hits) || hits.length === 0) {
+        result.dataset.state = "err";
+        result.textContent = "No match found in the United States.";
+        return;
+      }
+      const hit = hits[0];
+      const lat = Number(hit.lat);
+      const lon = Number(hit.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+        result.dataset.state = "err";
+        result.textContent = "Could not parse coordinates from match.";
+        return;
+      }
+      // MapLibre uses [lon, lat] (GeoJSON convention).
+      map.flyTo({ center: [lon, lat], zoom: 12, duration: 1200 });
+      const cell = nearestRiskFeature(state.activeFeatures, lat, lon);
+      const placeLabel = shortPlaceName(hit.display_name) || query;
+      result.dataset.state = "ok";
+      if (cell) {
+        const probability = Number(cell.properties?.risk_probability ?? 0);
+        const pct = Number.isFinite(probability) ? `${(probability * 100).toFixed(0)}%` : "n/a";
+        result.textContent = `${placeLabel} — predicted risk ${pct}`;
+      } else {
+        result.textContent = `${placeLabel} — outside the SoCal AOI; no risk available.`;
+      }
+    } catch (err) {
+      result.dataset.state = "err";
+      result.textContent = err.message || "Lookup failed. Try again.";
+    } finally {
+      submit.disabled = false;
+    }
   });
 }
 
-function bindControls() {
-  bindCollapsiblePanels();
-  nodes.slider.addEventListener("input", (event) => {
-    stopPlayback();
-    setActiveIndex(Number(event.target.value));
+// ── Subscribe form ──────────────────────────────────────────────────────
+
+function bindSubscribeForm() {
+  const form = document.getElementById("subscribe-form");
+  if (!form) return;
+  const status = document.getElementById("subscribe-status");
+  const output = document.getElementById("threshold-output");
+  const range = form.elements.threshold;
+  const submit = form.querySelector("button[type=submit]");
+
+  range.addEventListener("input", () => {
+    output.textContent = range.value;
   });
-  nodes.playbackToggle.addEventListener("click", togglePlayback);
-  window.addEventListener("keydown", (event) => {
-    if (event.target && ["INPUT", "BUTTON", "A"].includes(event.target.tagName)) {
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    status.removeAttribute("data-state");
+    status.textContent = "";
+    const email = form.elements.email.value.trim();
+    const zip = form.elements.zip.value.trim();
+    const threshold = Number(range.value) / 100;
+    if (!/^\S+@\S+\.\S+$/.test(email) || !/^\d{5}$/.test(zip)) {
+      status.dataset.state = "err";
+      status.textContent = "Please provide a valid email and 5-digit ZIP code.";
       return;
     }
-    if (event.key === "ArrowLeft") {
-      stopPlayback();
-      setActiveIndex(state.activeIndex - 1);
-    } else if (event.key === "ArrowRight") {
-      stopPlayback();
-      setActiveIndex(state.activeIndex + 1);
-    } else if (event.key === " ") {
-      event.preventDefault();
-      togglePlayback();
-    }
-  });
-  map.on("zoomend", () => {
-    const interactionStartedAt = performanceNow();
-    const windowEntry = state.windows[state.activeIndex];
-    const source = windowEntry ? selectSnapshotSource(windowEntry) : null;
-    if (source && resolveAssetUrl(source.uri) !== state.activeSnapshotUri) {
-      setActiveIndex(state.activeIndex);
-      return;
-    }
-    const previousCount = state.renderedFeatureCount;
-    const perfContext = state.activeSnapshot && windowEntry
-      ? {
-          action: "zoom",
-          interactionStartedAt,
-          windowStartDate: windowEntry.window_start_date,
-          zoom: map.getZoom(),
-          sourceLabel: state.activeSnapshotRenderLabel,
-          sourceUrl: state.activeSnapshotUri,
-          cacheHit: true,
-          snapshotLoadMs: 0,
-        }
-      : null;
-    const didRender = renderActiveSnapshot({ perfContext });
-    if (!didRender) {
-      const restyleStartedAt = performanceNow();
-      restyleRiskLayer();
-      if (perfContext) {
-        const renderSyncMs = performanceNow() - restyleStartedAt;
-        schedulePerformanceSample({
-          ...perfContext,
-          action: "zoom-style",
-          displayMode: `${DECK_RENDERER_LABEL}:${state.renderSignature || "unchanged"}`,
-          totalFeatureCount: state.activeSnapshot?.features?.length || 0,
-          renderedFeatureCount: state.renderedFeatureCount,
-          selectMs: 0,
-          layerSwapMs: renderSyncMs,
-          renderSyncMs,
-        });
+    submit.disabled = true;
+    try {
+      const response = await fetch("/api/subscriptions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, zip, risk_threshold: threshold }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(typeof body.detail === "string" ? body.detail : `Request failed (${response.status})`);
       }
-    }
-    if (state.activeSnapshot && previousCount !== state.renderedFeatureCount) {
-      updateMetadata(
-        state.manifest,
-        state.aoi,
-        state.activeSnapshot,
-        state.windows[state.activeIndex]
-      );
+      status.dataset.state = "ok";
+      status.textContent = "You're subscribed. We'll be in touch when risk crosses your threshold.";
+      form.reset();
+      output.textContent = "50";
+    } catch (err) {
+      status.dataset.state = "err";
+      status.textContent = err.message || "Subscription failed. Try again later.";
+    } finally {
+      submit.disabled = false;
     }
   });
 }
+
+// ── Boot ────────────────────────────────────────────────────────────────
 
 async function boot() {
-  if (!deckApi.Deck || !deckApi.MapView || !deckApi.ScatterplotLayer) {
-    setStatus("deck.gl failed to load; risk point prototype cannot start.", true);
+  if (!deckApi.MapboxOverlay) {
+    console.error("deck.gl MapboxOverlay not available — heatmap cannot start.");
     return;
   }
-
-  createLegend();
   bindControls();
-  installPerformanceExport();
-  bindPerformanceObservers();
-  initializeFaroTelemetry();
-  bindWebVitals();
-  bindBrowserErrorTelemetry();
-  bindPerformanceTelemetry();
-  updatePerformancePanel();
-  setStatus("Loading SoCal manifest...");
 
   try {
     const manifest = await fetchManifest();
@@ -1631,20 +737,71 @@ async function boot() {
     state.windows = normalizeWindows(manifest);
     const latestIndex = Math.max(
       state.windows.findIndex((item) => item.window_start_date === manifest.latest_window_start_date),
-      0
+      0,
     );
     state.activeIndex = latestIndex;
 
-    const aoi = await fetchJson(resolveAssetUrl(manifest.aoi_geojson_uri || "./data/aoi_counties.geojson"));
-    state.aoi = aoi;
+    state.aoi = await fetchJson(resolveAssetUrl(manifest.aoi_geojson_uri || "./data/aoi_counties.geojson"));
+    try {
+      state.landMask = await fetchJson(resolveAssetUrl("./data/socal_land_mask.geojson"));
+    } catch (err) {
+      console.warn("SoCal land mask unavailable; falling back to AOI polygons.", err);
+      state.landMask = null;
+    }
 
-    setStatus("Rendering AOI boundary...");
-    renderAoi(aoi);
+    // Wait for the basemap style to load before adding deck.gl overlay
+    // and AOI sources (MapLibre rejects addLayer/addSource before "load").
+    await new Promise((resolve) => {
+      if (map.isStyleLoaded() || map.loaded()) resolve();
+      else map.once("load", resolve);
+    });
+
+    // Discover the basemap's water layer id so the heatmap can render
+    // BENEATH it via deck.gl's `beforeId` prop. The basemap's own water
+    // polygons then paint over any heatmap-kernel bleed into the ocean —
+    // pixel-perfect water masking with zero custom geometry.
+    try {
+      const styleLayers = map.getStyle()?.layers || [];
+      const waterLayer = styleLayers.find(
+        (l) =>
+          l["source-layer"] === "water" ||
+          /^water($|[-_])/i.test(l.id || "")
+      );
+      state.waterBeforeId = waterLayer?.id || null;
+    } catch (err) {
+      console.warn("Could not locate basemap water layer for beforeId", err);
+      state.waterBeforeId = null;
+    }
+
+    // Register deck.gl as a MapLibre control in INTERLEAVED mode so each
+    // deck layer can specify a `beforeId` to position itself in the
+    // MapLibre layer stack (heat below water, picker above everything).
+    state.overlay = new deckApi.MapboxOverlay({
+      interleaved: true,
+      layers: [],
+    });
+    map.addControl(state.overlay);
+
+    // Rebuild the deck.gl layers on zoom changes so the heatmap kernel
+    // radius (heatmapRadiusForZoom) is recomputed for the new zoom — keeps
+    // the heatmap smooth at every zoom level instead of showing cell-row
+    // striping when the kernel becomes too small relative to cell spacing.
+    let _lastZoomBucket = -999;
+    const onZoomChange = () => {
+      const bucket = Math.round(map.getZoom() * 2);
+      if (bucket === _lastZoomBucket) return;
+      _lastZoomBucket = bucket;
+      rebuildOverlay();
+    };
+    map.on("zoomend", onZoomChange);
+    map.on("zoom", onZoomChange);
+
+    renderAoi();
+    bindHoverTooltip();
     configureTimeline();
     await setActiveIndex(latestIndex);
   } catch (error) {
-    console.error(error);
-    setStatus(error instanceof Error ? error.message : "Failed to load SoCal UI.", true);
+    console.error("Failed to start OpenFire UI:", error);
   }
 }
 
