@@ -7,16 +7,22 @@ import pytest
 
 from src.ui_socal.alert_worker import (
     AlertCandidate,
+    AlertLogKey,
     EmailAlert,
     RiskCell,
     Subscription,
     ZipCentroid,
+    alert_candidate_key,
+    alert_delivery_rows,
+    alert_log_table_id,
     evaluate_alerts,
+    filter_recent_alerts,
     haversine_km,
     latest_geojson_uri,
     load_subscriptions_from_bigquery,
     load_zip_centroids_from_bigquery,
     load_risk_cells,
+    recent_alerts_query,
     render_alert_email,
     resolve_manifest_asset_uri,
     send_email_via_sendgrid,
@@ -49,6 +55,69 @@ def test_evaluate_alerts_uses_nearest_cell_and_threshold() -> None:
 
     assert [candidate.subscription.email for candidate in candidates] == ["a@example.com"]
     assert candidates[0].risk_cell.risk_probability == pytest.approx(0.7)
+
+
+def test_alert_log_table_id_uses_default_bigquery_location() -> None:
+    assert (
+        alert_log_table_id()
+        == "msds603-mlops-project.openfire_features.ui_alert_deliveries"
+    )
+
+
+def test_recent_alerts_query_uses_cooldown_window() -> None:
+    query = recent_alerts_query("project.dataset.ui_alert_deliveries", cooldown_hours=120)
+
+    assert "FROM `project.dataset.ui_alert_deliveries`" in query
+    assert "INTERVAL 120 HOUR" in query
+    assert "LOWER(TRIM(email)) AS email" in query
+
+
+def test_filter_recent_alerts_suppresses_matching_delivery_key() -> None:
+    candidates = [
+        AlertCandidate(
+            subscription=Subscription(email="A@EXAMPLE.COM", zip="90001", risk_threshold=0.6),
+            zip_centroid=ZipCentroid(zip="90001", latitude=34.0, longitude=-118.0),
+            risk_cell=_cell(latitude=34.01, longitude=-118.01, risk=0.75),
+            threshold=0.6,
+            distance_km=1.23,
+        ),
+        AlertCandidate(
+            subscription=Subscription(email="b@example.com", zip="90002", risk_threshold=0.6),
+            zip_centroid=ZipCentroid(zip="90002", latitude=34.0, longitude=-118.0),
+            risk_cell=_cell(latitude=34.01, longitude=-118.01, risk=0.75),
+            threshold=0.6,
+            distance_km=1.23,
+        ),
+    ]
+
+    remaining = filter_recent_alerts(candidates, {alert_candidate_key(candidates[0])})
+
+    assert [candidate.subscription.email for candidate in remaining] == ["b@example.com"]
+    assert alert_candidate_key(candidates[0]) == AlertLogKey(
+        email="a@example.com",
+        zip="90001",
+        window_start_date="2026-04-17",
+    )
+
+
+def test_alert_delivery_rows_include_candidate_context() -> None:
+    candidate = AlertCandidate(
+        subscription=Subscription(email="A@EXAMPLE.COM", zip="90001", risk_threshold=0.6),
+        zip_centroid=ZipCentroid(zip="90001", latitude=34.0, longitude=-118.0),
+        risk_cell=_cell(latitude=34.01, longitude=-118.01, risk=0.75),
+        threshold=0.6,
+        distance_km=1.23,
+    )
+
+    rows = alert_delivery_rows([candidate], provider="sendgrid")
+
+    assert rows[0]["email"] == "a@example.com"
+    assert rows[0]["zip"] == "90001"
+    assert rows[0]["window_start_date"] == "2026-04-17"
+    assert rows[0]["risk_probability"] == pytest.approx(0.75)
+    assert rows[0]["threshold"] == pytest.approx(0.6)
+    assert rows[0]["provider"] == "sendgrid"
+    assert rows[0]["delivered_at"]
 
 
 def test_render_alert_email_includes_risk_context() -> None:

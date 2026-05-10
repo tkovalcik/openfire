@@ -47,6 +47,29 @@ longitude FLOAT64
 If either table is empty, the worker exits successfully and emits zero alert
 candidates.
 
+Alert delivery history defaults to:
+
+```text
+msds603-mlops-project.openfire_features.ui_alert_deliveries
+```
+
+Expected columns are auto-created by the worker when real sending is enabled:
+
+```text
+delivered_at TIMESTAMP
+email STRING
+zip STRING
+window_start_date STRING
+risk_probability FLOAT64
+threshold FLOAT64
+provider STRING
+model_version STRING
+```
+
+The worker uses this table as a cooldown log. With the default
+`--alert-cooldown-hours 120`, the same email + ZIP + prediction window will not
+be sent again within 5 days.
+
 ## Prepare ZIP centroids
 
 Validate a local ZIP centroid CSV or JSON before writing:

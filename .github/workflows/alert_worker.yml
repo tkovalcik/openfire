@@ -97,6 +97,10 @@ jobs:
             --zip-centroids-project "${{ env.GCP_PROJECT }}"
             --zip-centroids-dataset openfire_features
             --zip-centroids-table-name zip_centroids
+            --alert-log-project "${{ env.GCP_PROJECT }}"
+            --alert-log-dataset openfire_features
+            --alert-log-table-name ui_alert_deliveries
+            --alert-cooldown-hours 120
             --app-url "${OPENFIRE_ALERT_APP_URL}"
           )
 
