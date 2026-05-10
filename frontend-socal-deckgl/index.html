@@ -3,12 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>OpenFire SoCal AOI deck.gl</title>
+    <title>OpenFire — Hyperlocal Wildfire Risk</title>
     <link
       rel="stylesheet"
-      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-      crossorigin=""
+      href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -17,50 +15,74 @@
       <aside class="sidebar">
         <div class="brand-block">
           <p class="eyebrow">OpenFire</p>
-          <h1>SoCal AOI Risk deck.gl</h1>
-          <p class="lede">
-            Four-county training AOI with deck.gl WebGL risk-point rendering.
-          </p>
+          <h1>Hyperlocal wildfire risk</h1>
+          <ul class="hero-bullets">
+            <li><strong>NWS</strong> issues blunt alerts for entire counties.</li>
+            <li><strong>Other services</strong> alert after a fire starts.</li>
+            <li><strong>OpenFire</strong> predicts hyperlocal wildfire risk before ignition.</li>
+          </ul>
         </div>
 
-        <section class="panel collapsible-panel" data-collapsible-panel>
-          <button
-            class="panel-toggle"
-            type="button"
-            aria-expanded="true"
-            aria-controls="snapshot-panel-body"
-          >
-            <span>Snapshot</span>
-            <span class="disclosure-icon" aria-hidden="true"></span>
-          </button>
-          <div id="snapshot-panel-body" class="panel-body">
-            <dl class="metadata-grid">
-              <div>
-                <dt>Status</dt>
-                <dd id="meta-status">Loading...</dd>
-              </div>
-              <div>
-                <dt>Window date</dt>
-                <dd id="meta-window-date">Loading...</dd>
-              </div>
-              <div>
-                <dt>Model version</dt>
-                <dd id="meta-model-version">Loading...</dd>
-              </div>
-              <div>
-                <dt>Risk features</dt>
-                <dd id="meta-feature-count">Loading...</dd>
-              </div>
-              <div>
-                <dt>Render mode</dt>
-                <dd id="meta-render-mode">Loading...</dd>
-              </div>
-              <div>
-                <dt>AOI counties</dt>
-                <dd id="meta-county-count">Loading...</dd>
-              </div>
-            </dl>
-          </div>
+        <section class="panel" id="lookup-panel">
+          <h2>Find your location</h2>
+          <p class="lede">Enter an address or place to see its predicted risk.</p>
+          <form id="address-form" novalidate>
+            <label class="field">
+              <span class="visually-hidden">Address</span>
+              <input
+                id="address-input"
+                type="text"
+                name="address"
+                autocomplete="street-address"
+                placeholder="123 Main St, Santa Barbara"
+              />
+            </label>
+            <button type="submit" class="primary-button">Look up</button>
+            <p id="address-result" class="status-message" role="status" aria-live="polite"></p>
+          </form>
+        </section>
+
+        <section class="panel" id="subscribe-panel">
+          <h2>Get alerts for your area</h2>
+          <p class="lede">Be notified when risk in your ZIP crosses your threshold.</p>
+          <form id="subscribe-form" novalidate>
+            <label class="field">
+              <span>Email</span>
+              <input
+                type="email"
+                name="email"
+                required
+                autocomplete="email"
+                placeholder="you@example.com"
+              />
+            </label>
+            <label class="field">
+              <span>ZIP code</span>
+              <input
+                type="text"
+                name="zip"
+                required
+                pattern="\d{5}"
+                maxlength="5"
+                inputmode="numeric"
+                autocomplete="postal-code"
+                placeholder="93001"
+              />
+            </label>
+            <label class="field">
+              <span>Alert above <output id="threshold-output">50</output>%</span>
+              <input
+                type="range"
+                name="threshold"
+                min="0"
+                max="100"
+                step="5"
+                value="50"
+              />
+            </label>
+            <button type="submit" class="primary-button">Subscribe</button>
+            <p id="subscribe-status" class="status-message" role="status" aria-live="polite"></p>
+          </form>
         </section>
 
         <section class="panel collapsible-panel" data-collapsible-panel>
@@ -80,10 +102,6 @@
               </button>
             </div>
             <div class="timeline-control">
-              <div class="timeline-meta">
-                <span id="timeline-date">Loading...</span>
-                <span id="timeline-position">0 / 0</span>
-              </div>
               <input
                 id="timeline-slider"
                 type="range"
@@ -94,7 +112,6 @@
                 disabled
                 aria-label="Prediction window"
               />
-              <div id="timeline-ticks" class="timeline-ticks" aria-hidden="true"></div>
             </div>
           </div>
         </section>
@@ -103,89 +120,27 @@
           <button
             class="panel-toggle"
             type="button"
-            aria-expanded="false"
+            aria-expanded="true"
             aria-controls="legend-panel-body"
           >
             <span>Legend</span>
             <span class="disclosure-icon" aria-hidden="true"></span>
           </button>
-          <div id="legend-panel-body" class="panel-body" hidden>
-            <div id="legend" class="legend"></div>
-          </div>
-        </section>
-
-        <section class="panel collapsible-panel" data-collapsible-panel>
-          <button
-            class="panel-toggle"
-            type="button"
-            aria-expanded="false"
-            aria-controls="performance-panel-body"
-          >
-            <span>Performance</span>
-            <span class="disclosure-icon" aria-hidden="true"></span>
-          </button>
-          <div id="performance-panel-body" class="panel-body" hidden>
-            <dl class="metadata-grid performance-grid">
-              <div>
-                <dt>Latest</dt>
-                <dd id="perf-latest">Waiting...</dd>
-              </div>
-              <div>
-                <dt>Snapshot load</dt>
-                <dd id="perf-snapshot-load">Waiting...</dd>
-              </div>
-              <div>
-                <dt>Render</dt>
-                <dd id="perf-render">Waiting...</dd>
-              </div>
-              <div>
-                <dt>Paint</dt>
-                <dd id="perf-paint">Waiting...</dd>
-              </div>
-              <div>
-                <dt>P95 paint</dt>
-                <dd id="perf-p95-paint">Waiting...</dd>
-              </div>
-              <div>
-                <dt>Long tasks</dt>
-                <dd id="perf-long-tasks">0</dd>
-              </div>
-            </dl>
-            <div class="panel-actions panel-actions-left">
-              <a class="panel-link" href="/metrics/ui/dashboard" target="_blank" rel="noreferrer">
-                Dashboard
-              </a>
-            </div>
-          </div>
-        </section>
-
-        <section class="panel collapsible-panel" data-collapsible-panel>
-          <button
-            class="panel-toggle"
-            type="button"
-            aria-expanded="false"
-            aria-controls="source-panel-body"
-          >
-            <span>Source</span>
-            <span class="disclosure-icon" aria-hidden="true"></span>
-          </button>
-          <div id="source-panel-body" class="panel-body" hidden>
-            <p id="source-message" class="status-message">Loading manifest...</p>
-            <p id="status-message" class="status-message">Loading map...</p>
+          <div id="legend-panel-body" class="panel-body">
+            <div class="legend-gradient" aria-hidden="true"></div>
+            <div class="legend-axis"><span>Low</span><span>0.5</span><span>High</span></div>
+            <p class="legend-caption">Fire-risk probability over the next 15 days. Hover any point for the exact value.</p>
           </div>
         </section>
       </aside>
 
       <section class="map-shell">
         <div id="map" aria-label="OpenFire Southern California AOI risk map"></div>
+        <div id="map-tooltip" class="map-tooltip" hidden></div>
       </section>
     </main>
 
-    <script
-      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-      crossorigin=""
-    ></script>
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://unpkg.com/deck.gl@^9.0.0/dist.min.js"></script>
     <script src="./runtime-config.js"></script>
     <script src="./config.js"></script>
