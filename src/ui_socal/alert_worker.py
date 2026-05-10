@@ -24,6 +24,8 @@ DEFAULT_THRESHOLD = 0.5
 DEFAULT_BQ_PROJECT = "msds603-mlops-project"
 DEFAULT_SUBS_BQ_DATASET = "openfire_features"
 DEFAULT_SUBS_BQ_TABLE = "ui_subscriptions"
+DEFAULT_ZIP_CENTROIDS_BQ_DATASET = "openfire_features"
+DEFAULT_ZIP_CENTROIDS_BQ_TABLE = "zip_centroids"
 EARTH_RADIUS_KM = 6371.0088
 
 
@@ -67,6 +69,12 @@ def _coerce_float(value: Any, *, field_name: str) -> float:
         raise ValueError(f"{field_name} must be numeric; got {value!r}") from exc
 
 
+def _row_get(row: Any, key: str) -> Any:
+    if hasattr(row, "get"):
+        return row.get(key)
+    return row[key]
+
+
 def load_subscriptions_from_json(path: str | Path) -> list[Subscription]:
     """Load subscriptions from a JSON fixture for local dry-runs and tests."""
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -75,12 +83,15 @@ def load_subscriptions_from_json(path: str | Path) -> list[Subscription]:
     for row in rows:
         subscriptions.append(
             Subscription(
-                email=str(row["email"]).lower().strip(),
-                zip=str(row["zip"]).strip(),
+                email=str(_row_get(row, "email")).lower().strip(),
+                zip=str(_row_get(row, "zip")).strip(),
                 risk_threshold=(
                     None
-                    if row.get("risk_threshold") is None
-                    else _coerce_float(row.get("risk_threshold"), field_name="risk_threshold")
+                    if _row_get(row, "risk_threshold") is None
+                    else _coerce_float(
+                        _row_get(row, "risk_threshold"),
+                        field_name="risk_threshold",
+                    )
                 ),
             )
         )
@@ -92,6 +103,16 @@ def subscription_table_id(
     project: str | None = None,
     dataset: str = DEFAULT_SUBS_BQ_DATASET,
     table: str = DEFAULT_SUBS_BQ_TABLE,
+) -> str:
+    resolved_project = project or DEFAULT_BQ_PROJECT
+    return f"{resolved_project}.{dataset}.{table}"
+
+
+def zip_centroid_table_id(
+    *,
+    project: str | None = None,
+    dataset: str = DEFAULT_ZIP_CENTROIDS_BQ_DATASET,
+    table: str = DEFAULT_ZIP_CENTROIDS_BQ_TABLE,
 ) -> str:
     resolved_project = project or DEFAULT_BQ_PROJECT
     return f"{resolved_project}.{dataset}.{table}"
@@ -115,6 +136,21 @@ QUALIFY ROW_NUMBER() OVER (
 """.strip()
 
 
+def zip_centroids_query(table_id: str) -> str:
+    """Build the BigQuery query for ZIP centroid lookup rows."""
+    escaped_table_id = table_id.replace("`", "")
+    return f"""
+SELECT
+  TRIM(zip) AS zip,
+  latitude,
+  longitude
+FROM `{escaped_table_id}`
+WHERE zip IS NOT NULL
+  AND latitude IS NOT NULL
+  AND longitude IS NOT NULL
+""".strip()
+
+
 def load_subscriptions_from_bigquery(
     table_id: str,
     *,
@@ -131,16 +167,42 @@ def load_subscriptions_from_bigquery(
     for row in client.query(subscriptions_query(table_id)).result():
         subscriptions.append(
             Subscription(
-                email=str(row["email"]).lower().strip(),
-                zip=str(row["zip"]).strip(),
+                email=str(_row_get(row, "email")).lower().strip(),
+                zip=str(_row_get(row, "zip")).strip(),
                 risk_threshold=(
                     None
-                    if row.get("risk_threshold") is None
-                    else _coerce_float(row.get("risk_threshold"), field_name="risk_threshold")
+                    if _row_get(row, "risk_threshold") is None
+                    else _coerce_float(
+                        _row_get(row, "risk_threshold"),
+                        field_name="risk_threshold",
+                    )
                 ),
             )
         )
     return subscriptions
+
+
+def load_zip_centroids_from_bigquery(
+    table_id: str,
+    *,
+    client: Any | None = None,
+) -> dict[str, ZipCentroid]:
+    """Load ZIP centroid lookup rows from BigQuery."""
+    if client is None:
+        from google.cloud import bigquery
+
+        project = table_id.split(".", 1)[0] if "." in table_id else None
+        client = bigquery.Client(project=project)
+
+    centroids: dict[str, ZipCentroid] = {}
+    for row in client.query(zip_centroids_query(table_id)).result():
+        zip_code = str(_row_get(row, "zip")).strip()
+        centroids[zip_code] = ZipCentroid(
+            zip=zip_code,
+            latitude=_coerce_float(_row_get(row, "latitude"), field_name="latitude"),
+            longitude=_coerce_float(_row_get(row, "longitude"), field_name="longitude"),
+        )
+    return centroids
 
 
 def load_zip_centroids_from_json(path: str | Path) -> dict[str, ZipCentroid]:
@@ -161,11 +223,11 @@ def load_zip_centroids_from_json(path: str | Path) -> dict[str, ZipCentroid]:
 
     out: dict[str, ZipCentroid] = {}
     for row in rows:
-        zip_code = str(row["zip"]).strip()
+        zip_code = str(_row_get(row, "zip")).strip()
         out[zip_code] = ZipCentroid(
             zip=zip_code,
-            latitude=_coerce_float(row["latitude"], field_name="latitude"),
-            longitude=_coerce_float(row["longitude"], field_name="longitude"),
+            latitude=_coerce_float(_row_get(row, "latitude"), field_name="latitude"),
+            longitude=_coerce_float(_row_get(row, "longitude"), field_name="longitude"),
         )
     return out
 
@@ -338,7 +400,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--subscriptions-project", default=DEFAULT_BQ_PROJECT)
     parser.add_argument("--subscriptions-dataset", default=DEFAULT_SUBS_BQ_DATASET)
     parser.add_argument("--subscriptions-table-name", default=DEFAULT_SUBS_BQ_TABLE)
-    parser.add_argument("--zip-centroids-json", required=True)
+    parser.add_argument("--zip-centroids-json")
+    parser.add_argument(
+        "--zip-centroids-table",
+        help=(
+            "Fully-qualified BigQuery table id with zip, latitude, and longitude columns. "
+            "Defaults can be composed with --zip-centroids-project/"
+            "--zip-centroids-dataset/--zip-centroids-table-name."
+        ),
+    )
+    parser.add_argument("--zip-centroids-project", default=DEFAULT_BQ_PROJECT)
+    parser.add_argument("--zip-centroids-dataset", default=DEFAULT_ZIP_CENTROIDS_BQ_DATASET)
+    parser.add_argument("--zip-centroids-table-name", default=DEFAULT_ZIP_CENTROIDS_BQ_TABLE)
     parser.add_argument("--default-threshold", type=float, default=DEFAULT_THRESHOLD)
     parser.add_argument(
         "--dry-run",
@@ -353,6 +426,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
     if args.subscriptions_json and args.subscriptions_table:
         raise SystemExit("--subscriptions-json and --subscriptions-table cannot both be set.")
+    if args.zip_centroids_json and args.zip_centroids_table:
+        raise SystemExit("--zip-centroids-json and --zip-centroids-table cannot both be set.")
     manifest_uri = normalize_uri(args.manifest_uri)
     manifest = load_manifest(manifest_uri)
     geojson_uri = latest_geojson_uri(manifest, manifest_uri=manifest_uri)
@@ -367,7 +442,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         subscriptions = load_subscriptions_from_bigquery(table_id)
         subscriptions_source = table_id
-    centroids = load_zip_centroids_from_json(args.zip_centroids_json)
+    if args.zip_centroids_json:
+        centroids = load_zip_centroids_from_json(args.zip_centroids_json)
+        zip_centroids_source = normalize_uri(args.zip_centroids_json)
+    else:
+        table_id = args.zip_centroids_table or zip_centroid_table_id(
+            project=args.zip_centroids_project,
+            dataset=args.zip_centroids_dataset,
+            table=args.zip_centroids_table_name,
+        )
+        centroids = load_zip_centroids_from_bigquery(table_id)
+        zip_centroids_source = table_id
     cells = load_risk_cells(geojson_uri)
     candidates = evaluate_alerts(
         subscriptions,
@@ -385,6 +470,8 @@ def main(argv: list[str] | None = None) -> int:
                 "geojson_uri": geojson_uri,
                 "subscriptions_source": subscriptions_source,
                 "subscriptions": len(subscriptions),
+                "zip_centroids_source": zip_centroids_source,
+                "zip_centroids": len(centroids),
                 "risk_cells": len(cells),
                 "alert_candidates": [
                     {

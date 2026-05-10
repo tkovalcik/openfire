@@ -12,10 +12,13 @@ from src.ui_socal.alert_worker import (
     haversine_km,
     latest_geojson_uri,
     load_subscriptions_from_bigquery,
+    load_zip_centroids_from_bigquery,
     load_risk_cells,
     resolve_manifest_asset_uri,
     subscription_table_id,
     subscriptions_query,
+    zip_centroid_table_id,
+    zip_centroids_query,
 )
 
 
@@ -78,6 +81,22 @@ def test_subscriptions_query_deduplicates_by_email_and_zip() -> None:
     assert "ORDER BY created_at DESC" in query
 
 
+def test_zip_centroid_table_id_uses_default_bigquery_location() -> None:
+    assert (
+        zip_centroid_table_id()
+        == "msds603-mlops-project.openfire_features.zip_centroids"
+    )
+
+
+def test_zip_centroids_query_selects_lookup_columns() -> None:
+    query = zip_centroids_query("project.dataset.zip_centroids")
+
+    assert "FROM `project.dataset.zip_centroids`" in query
+    assert "TRIM(zip) AS zip" in query
+    assert "latitude" in query
+    assert "longitude" in query
+
+
 def test_load_subscriptions_from_bigquery_uses_query_rows() -> None:
     client = _FakeBigQueryClient(
         [
@@ -105,6 +124,35 @@ def test_load_subscriptions_from_bigquery_handles_empty_table() -> None:
     )
 
     assert subscriptions == []
+
+
+def test_load_zip_centroids_from_bigquery_uses_query_rows() -> None:
+    client = _FakeBigQueryClient(
+        [
+            {"zip": " 90001 ", "latitude": "34.01", "longitude": "-118.01"},
+            {"zip": "90002", "latitude": 34.2, "longitude": -118.2},
+        ]
+    )
+
+    centroids = load_zip_centroids_from_bigquery(
+        "project.dataset.zip_centroids",
+        client=client,
+    )
+
+    assert client.queries == [zip_centroids_query("project.dataset.zip_centroids")]
+    assert centroids == {
+        "90001": ZipCentroid(zip="90001", latitude=34.01, longitude=-118.01),
+        "90002": ZipCentroid(zip="90002", latitude=34.2, longitude=-118.2),
+    }
+
+
+def test_load_zip_centroids_from_bigquery_handles_empty_table() -> None:
+    centroids = load_zip_centroids_from_bigquery(
+        "project.dataset.zip_centroids",
+        client=_FakeBigQueryClient([]),
+    )
+
+    assert centroids == {}
 
 
 def test_resolve_manifest_asset_uri_preserves_gcs_uri() -> None:
