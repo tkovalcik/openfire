@@ -2,6 +2,15 @@
   const useLiveManifest = window.OPENFIRE_USE_LIVE_MANIFEST ?? true;
   const uiPerformanceEnabled = window.OPENFIRE_UI_PERF_ENABLED ?? true;
 
+  // Basemap style URL. Defaults to OpenFreeMap Positron (no key required,
+  // CC-licensed). Override via OPENFIRE_BASEMAP_STYLE for MapTiler / Stadia
+  // / custom styles. Examples:
+  //   - "https://api.maptiler.com/maps/streets-v2/style.json?key=..."
+  //   - "https://tiles.stadiamaps.com/styles/alidade_smooth.json?api_key=..."
+  const basemapStyle =
+    window.OPENFIRE_BASEMAP_STYLE ||
+    "https://tiles.openfreemap.org/styles/positron";
+
   window.OPENFIRE_SOCAL_CONFIG = {
     manifestUrl: useLiveManifest ? "/data/manifest.json" : "./data/socal_demo_manifest.json",
     dataProxyPrefix: "/data/",
@@ -9,55 +18,45 @@
     excludedWindowStartDates: ["2025-12-23", "2025-12-28"],
     playbackIntervalMs: 750,
     snapshotCacheSize: 8,
+    basemapStyle,
     performanceTracking: {
       enabled: uiPerformanceEnabled,
       uiVariant: window.OPENFIRE_UI_VARIANT || "deckgl-scatterplot",
       appVersion: window.OPENFIRE_UI_VERSION || "socal-ui-deckgl",
       telemetryEndpoint: "/metrics/ui/performance",
-      telemetryFlushIntervalMs: 10000,
-      telemetryBatchSize: 20,
-      sampleLimit: 80,
-      slowPaintMs: 1000,
-      slowRenderMs: 300,
-      slowSnapshotLoadMs: 1500,
-      longTaskMs: 50,
-      logSamples: window.OPENFIRE_PERF_LOG_SAMPLES ?? false,
       storageKey: "openfire-socal-deckgl-performance",
       webVitals: {
         enabled: window.OPENFIRE_WEB_VITALS_ENABLED ?? true,
-        scriptUrl: window.OPENFIRE_WEB_VITALS_SCRIPT_URL || "https://unpkg.com/web-vitals@5/dist/web-vitals.iife.js",
+        scriptUrl: window.OPENFIRE_WEB_VITALS_SCRIPT_URL || "",
       },
       faro: {
         enabled: Boolean(window.OPENFIRE_FARO_ENABLED ?? window.OPENFIRE_FARO_COLLECTOR_URL),
         collectorUrl: window.OPENFIRE_FARO_COLLECTOR_URL || "",
-        scriptUrl: window.OPENFIRE_FARO_SCRIPT_URL || "https://unpkg.com/@grafana/faro-web-sdk@^1.0.0/dist/bundle/faro-web-sdk.iife.js",
         appName: window.OPENFIRE_FARO_APP_NAME || "openfire-ui-socal",
-        appVersion: window.OPENFIRE_FARO_APP_VERSION || window.OPENFIRE_UI_VERSION || "socal-ui",
-        appNamespace: window.OPENFIRE_FARO_APP_NAMESPACE || "openfire",
-        environment: window.OPENFIRE_FARO_ENVIRONMENT || "production",
       },
     },
     lowZoomPerformance: {
-      enabled: true,
-      tiers: [
-        { maxZoom: 7, sampleStride: 6, sampleOffset: 2, variantKey: "low" },
-        { maxZoom: 9, sampleStride: 3, sampleOffset: 1, variantKey: "medium" },
-      ],
+      enabled: false,
+      tiers: [],
     },
     map: {
-      center: [35.2, -119.2],
-      zoom: 7,
-      minZoom: 6,
+      // MapLibre uses [lon, lat] order (GeoJSON convention), unlike Leaflet.
+      center: [-119.2, 35.2],
+      zoom: 6.5,
+      minZoom: 5,
+      maxZoom: 16,
     },
-    riskBands: [
-      { min: 0.0, max: 0.125, label: "Model risk 0.000-0.125", color: "#3b8f70" },
-      { min: 0.125, max: 0.25, label: "Model risk 0.125-0.250", color: "#72a95d" },
-      { min: 0.25, max: 0.375, label: "Model risk 0.250-0.375", color: "#a8bd51" },
-      { min: 0.375, max: 0.5, label: "Model risk 0.375-0.500", color: "#e2b84b" },
-      { min: 0.5, max: 0.625, label: "Model risk 0.500-0.625", color: "#df913f" },
-      { min: 0.625, max: 0.75, label: "Model risk 0.625-0.750", color: "#d8643f" },
-      { min: 0.75, max: 0.875, label: "Model risk 0.750-0.875", color: "#bd3f38" },
-      { min: 0.875, max: 1.01, label: "Model risk 0.875-1.000", color: "#8f2430" },
+    // Continuous color stops keyed at the same probability points the legend
+    // gradient uses. Used by the deck.gl HeatmapLayer's colorRange.
+    riskGradient: [
+      [59, 143, 112, 0],
+      [114, 169, 93, 200],
+      [168, 189, 81, 220],
+      [226, 184, 75, 230],
+      [223, 145, 63, 235],
+      [216, 100, 63, 240],
+      [189, 63, 56, 245],
+      [143, 36, 48, 250],
     ],
   };
 })();

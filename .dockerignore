@@ -33,6 +33,8 @@ frontend-socal/data/*
 !frontend-socal-deckgl/data/
 frontend-socal-deckgl/data/*
 !frontend-socal-deckgl/data/aoi_counties.geojson
+!frontend-socal-deckgl/data/socal_demo_manifest.json
+!frontend-socal-deckgl/data/socal_land_mask.geojson
 mlruns/
 .cache/
 
