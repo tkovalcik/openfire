@@ -1,0 +1,226 @@
+name: Deploy OpenFire Alert Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      execute_job:
+        description: Execute the Cloud Run Job after updating it
+        required: true
+        default: false
+        type: boolean
+      send:
+        description: Send real alerts through SendGrid instead of dry-run output
+        required: true
+        default: false
+        type: boolean
+      manage_scheduler:
+        description: Create or update the Cloud Scheduler trigger
+        required: true
+        default: false
+        type: boolean
+      scheduler_job_name:
+        description: Cloud Scheduler job name
+        required: true
+        default: openfire-alert-worker-daily
+        type: string
+      schedule:
+        description: Cron schedule for the alert worker
+        required: true
+        default: "0 16 * * *"
+        type: string
+      time_zone:
+        description: Cloud Scheduler time zone
+        required: true
+        default: Etc/UTC
+        type: string
+
+env:
+  GCP_PROJECT: msds603-mlops-project
+  REGION: us-central1
+  JOB_NAME: openfire-alert-worker
+  IMAGE: us-central1-docker.pkg.dev/msds603-mlops-project/openfire/alert-worker
+  SERVICE_ACCOUNT: openfire-ui-socal-runner@msds603-mlops-project.iam.gserviceaccount.com
+  GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+  GCP_DEPLOYER_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+  CLOUD_RUN_SECRET_SENDGRID_API_KEY: ${{ vars.CLOUD_RUN_SECRET_SENDGRID_API_KEY }}
+  OPENFIRE_ALERT_FROM_EMAIL: ${{ vars.OPENFIRE_ALERT_FROM_EMAIL }}
+  OPENFIRE_ALERT_APP_URL: ${{ vars.OPENFIRE_ALERT_APP_URL || 'https://openfire-ui-socal-deckgl-222683846563.us-central1.run.app' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          required_vars=(
+            GCP_WORKLOAD_IDENTITY_PROVIDER
+            GCP_DEPLOYER_SERVICE_ACCOUNT
+          )
+
+          for name in "${required_vars[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required repository variable: ${name}"
+              exit 1
+            fi
+          done
+
+          if [[ "${{ inputs.send }}" == "true" ]]; then
+            if [[ -z "${CLOUD_RUN_SECRET_SENDGRID_API_KEY:-}" ]]; then
+              echo "::error::Missing repository variable: CLOUD_RUN_SECRET_SENDGRID_API_KEY"
+              exit 1
+            fi
+            if [[ -z "${OPENFIRE_ALERT_FROM_EMAIL:-}" ]]; then
+              echo "::error::Missing repository variable: OPENFIRE_ALERT_FROM_EMAIL"
+              exit 1
+            fi
+          fi
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        run: |
+          docker build -f docker/Dockerfile.alert_worker \
+            -t ${{ env.IMAGE }}:${{ github.sha }} \
+            -t ${{ env.IMAGE }}:latest \
+            .
+          docker push ${{ env.IMAGE }}:${{ github.sha }}
+          docker push ${{ env.IMAGE }}:latest
+
+      - name: Build alert worker command args
+        id: args
+        shell: bash
+        run: |
+          set -euo pipefail
+          ALERT_ARGS=(
+            python -m src.ui_socal.alert_worker
+            --manifest-uri gs://openfire/predictions/manifest.json
+            --subscriptions-project "${{ env.GCP_PROJECT }}"
+            --subscriptions-dataset openfire_features
+            --subscriptions-table-name ui_subscriptions
+            --zip-centroids-project "${{ env.GCP_PROJECT }}"
+            --zip-centroids-dataset openfire_features
+            --zip-centroids-table-name zip_centroids
+            --alert-log-project "${{ env.GCP_PROJECT }}"
+            --alert-log-dataset openfire_features
+            --alert-log-table-name ui_alert_deliveries
+            --alert-cooldown-hours 120
+            --app-url "${OPENFIRE_ALERT_APP_URL}"
+          )
+
+          if [[ -n "${OPENFIRE_ALERT_FROM_EMAIL:-}" ]]; then
+            ALERT_ARGS+=(--alert-from-email "${OPENFIRE_ALERT_FROM_EMAIL}")
+          fi
+
+          if [[ "${{ inputs.send }}" == "true" ]]; then
+            ALERT_ARGS+=(--send)
+          fi
+
+          ARGS_CSV="$(IFS=,; echo "${ALERT_ARGS[*]}")"
+          echo "args_csv=${ARGS_CSV}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create or update Cloud Run Job
+        shell: bash
+        run: |
+          set -euo pipefail
+          SECRET_FLAGS=()
+          if [[ "${{ inputs.send }}" == "true" ]]; then
+            SECRET_FLAGS+=(--update-secrets "SENDGRID_API_KEY=${CLOUD_RUN_SECRET_SENDGRID_API_KEY}:latest")
+          fi
+
+          JOB_ARGS=(
+            "--image=${{ env.IMAGE }}:${{ github.sha }}"
+            "--project=${{ env.GCP_PROJECT }}"
+            "--region=${{ env.REGION }}"
+            "--service-account=${{ env.SERVICE_ACCOUNT }}"
+            "--memory=1Gi"
+            "--cpu=1"
+            "--task-timeout=1800s"
+            "--max-retries=0"
+            "--args=${{ steps.args.outputs.args_csv }}"
+          )
+
+          if (( ${#SECRET_FLAGS[@]} > 0 )); then
+            JOB_ARGS+=("${SECRET_FLAGS[@]}")
+          fi
+
+          if gcloud run jobs describe "${{ env.JOB_NAME }}" \
+               --project="${{ env.GCP_PROJECT }}" \
+               --region="${{ env.REGION }}" \
+               &>/dev/null; then
+            gcloud run jobs update "${{ env.JOB_NAME }}" "${JOB_ARGS[@]}"
+          else
+            gcloud run jobs create "${{ env.JOB_NAME }}" "${JOB_ARGS[@]}"
+          fi
+
+      - name: Create or update Cloud Scheduler trigger
+        if: ${{ inputs.manage_scheduler }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SCHEDULER_URI="https://${{ env.REGION }}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${{ env.GCP_PROJECT }}/jobs/${{ env.JOB_NAME }}:run"
+          SCHEDULER_ARGS=(
+            "--project=${{ env.GCP_PROJECT }}"
+            "--location=${{ env.REGION }}"
+            "--schedule=${{ inputs.schedule }}"
+            "--time-zone=${{ inputs.time_zone }}"
+            "--uri=${SCHEDULER_URI}"
+            "--http-method=POST"
+            "--message-body={}"
+            "--headers=Content-Type=application/json"
+            "--oauth-service-account-email=${{ env.SERVICE_ACCOUNT }}"
+            "--oauth-token-scope=https://www.googleapis.com/auth/cloud-platform"
+          )
+
+          if gcloud scheduler jobs describe "${{ inputs.scheduler_job_name }}" \
+               --project="${{ env.GCP_PROJECT }}" \
+               --location="${{ env.REGION }}" \
+               &>/dev/null; then
+            gcloud scheduler jobs update http "${{ inputs.scheduler_job_name }}" "${SCHEDULER_ARGS[@]}"
+          else
+            gcloud scheduler jobs create http "${{ inputs.scheduler_job_name }}" "${SCHEDULER_ARGS[@]}"
+          fi
+
+      - name: Execute alert worker job
+        if: ${{ inputs.execute_job }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run jobs execute "${{ env.JOB_NAME }}" \
+            --project="${{ env.GCP_PROJECT }}" \
+            --region="${{ env.REGION }}" \
+            --wait
+
+      - name: Summarize run
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### OpenFire Alert Worker"
+            echo ""
+            echo "- Image: \`${{ env.IMAGE }}:${{ github.sha }}\`"
+            echo "- Job: \`${{ env.JOB_NAME }}\`"
+            echo "- Execute job: \`${{ inputs.execute_job }}\`"
+            echo "- Send real alerts: \`${{ inputs.send }}\`"
+            echo "- Manage scheduler: \`${{ inputs.manage_scheduler }}\`"
+            if [[ "${{ inputs.manage_scheduler }}" == "true" ]]; then
+              echo "- Scheduler: \`${{ inputs.scheduler_job_name }}\`"
+              echo "- Schedule: \`${{ inputs.schedule }}\`"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"

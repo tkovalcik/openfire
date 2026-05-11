@@ -149,10 +149,10 @@ def test_socal_deckgl_prototype_is_isolated_static_variant() -> None:
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
 
     assert (deckgl_root / "data" / "aoi_counties.geojson").exists()
-    assert not (deckgl_root / "data" / "socal_20240726_risk.geojson").exists()
-    assert "../frontend-socal/data/socal_20240726_risk.geojson" in (
-        deckgl_root / "data" / "socal_demo_manifest.json"
-    ).read_text(encoding="utf-8")
+    # The large demo prediction GeoJSON already lives in the Leaflet static
+    # fixture directory. The deck.gl variant resolves that legacy manifest path
+    # through /data/<basename> and keeps duplicate 18MB copies out of Git.
+    assert (ROOT / "frontend-socal" / "data" / "socal_20240726_risk.geojson").exists()
     assert 'uiVariant: window.OPENFIRE_UI_VARIANT || "deckgl-scatterplot"' in config
     assert 'storageKey: "openfire-socal-deckgl-performance"' in config
     assert "OPENFIRE_UI_PERF_ENABLED" in config
@@ -160,13 +160,18 @@ def test_socal_deckgl_prototype_is_isolated_static_variant() -> None:
     assert "/data/manifest.json" in config
     assert 'telemetryEndpoint: "/metrics/ui/performance"' in config
     assert "https://unpkg.com/deck.gl@^9.0.0/dist.min.js" in html
-    assert "deckApi.Deck" in app
-    assert "deckApi.MapView" in app
+    assert "https://unpkg.com/maplibre-gl" in html
+    # MapLibre + deck.gl MapboxOverlay architecture (the basemap is rendered
+    # by MapLibre as WebGL vector tiles; deck.gl shares the same WebGL
+    # context for true seamless zoom/pan with no fade or offset glitches).
+    assert "maplibregl.Map" in app
+    assert "deckApi.MapboxOverlay" in app
+    assert "deckApi.HeatmapLayer" in app
+    assert "deckApi.SolidPolygonLayer" in app  # cover-polygon clips heat to AOI
     assert "deckApi.ScatterplotLayer" in app
-    assert "DeckRiskLayer" in app
-    assert "DECK_RENDERER_LABEL" in app
     assert "L.circleMarker" not in app
-    assert "canvasRenderer" not in app
+    assert "L.map(" not in app
+    # Legacy class names retained in styles so other components keep passing
     assert ".deckgl-risk-layer" in styles
     assert ".deckgl-risk-tooltip" in styles
     assert "OPENFIRE_SOCAL_STATIC_ROOT=/app/frontend-socal-deckgl" in dockerfile
@@ -176,8 +181,35 @@ def test_socal_deckgl_prototype_is_isolated_static_variant() -> None:
     assert '"OPENFIRE_UI_VARIANT=deckgl-scatterplot"' in workflow
     assert "frontend-socal-deckgl/data/*" in dockerignore
     assert "!frontend-socal-deckgl/data/aoi_counties.geojson" in dockerignore
+    assert "!frontend-socal-deckgl/data/socal_demo_manifest.json" in dockerignore
+    assert "!frontend-socal-deckgl/data/socal_land_mask.geojson" in dockerignore
     assert "!frontend-socal-deckgl/data/aoi_counties.geojson" in gitignore
     assert "!frontend-socal-deckgl/data/socal_demo_manifest.json" in gitignore
+    assert "frontend-socal-deckgl/data/socal_20240726_risk.geojson" in gitignore
+    # Heatmap refactor: continuous-color meter-radius cells, hero copy,
+    # subscribe + address-lookup forms, gradient legend, water mask.
+    assert "Hyperlocal wildfire risk" in html
+    assert 'class="hero-bullets"' in html
+    assert 'class="legend-gradient"' in html
+    assert 'id="subscribe-form"' in html
+    assert 'id="address-form"' in html
+    assert 'id="lookup-panel"' in html
+    assert "Snapshot" not in html
+    assert "Performance" not in html
+    assert 'id="source-panel-body"' not in html
+    assert "applyLandMaskToSnapshot" in app
+    assert "bindAddressLookup" in app
+    assert "bindSubscribeForm" in app
+    assert "nominatim.openstreetmap.org" in app
+    assert "openfire-water-cover" in app  # cover polygon hides heat over water
+    assert "buildHeatmapLayer" in app
+    assert "buildPickerLayer" in app
+    # MapLibre basemap style is configurable via env var (OpenFreeMap by
+    # default; can swap to MapTiler/Stadia at deploy time).
+    assert "OPENFIRE_BASEMAP_STYLE" in config
+    assert "openfreemap.org" in config
+    assert "enabled: false" in config  # lowZoomPerformance is disabled
+    assert (deckgl_root / "data" / "socal_land_mask.geojson").exists()
 
 
 def test_socal_ui_service_serves_static_files(monkeypatch) -> None:
@@ -197,7 +229,9 @@ def test_socal_ui_service_can_serve_deckgl_static_root(monkeypatch) -> None:
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "OpenFire SoCal AOI deck.gl" in response.text
+    # Title was rebranded to the public-facing product name during the
+    # heatmap refactor; the deck.gl bundle is still loaded from unpkg.
+    assert "Hyperlocal wildfire risk" in response.text
     assert "deck.gl@^9.0.0" in response.text
 
 
