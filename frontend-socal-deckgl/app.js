@@ -382,7 +382,11 @@ function buildHeatmapLayer() {
     intensity: HEATMAP_INTENSITY,
     threshold: HEATMAP_THRESHOLD,
     colorRange: config.riskGradient,
-    colorDomain: [0, 1],
+    // Map [0, 0.7] across the full gradient (instead of [0,1]). The data's
+    // p99 is ~81% risk and most cells are well below — using the full [0,1]
+    // domain wastes 30% of the gradient on values that almost never occur.
+    // [0, 0.7] gives us actual visible reds for the high-risk hotspots.
+    colorDomain: [0, 0.7],
     beforeId: state.waterBeforeId || undefined,
     updateTriggers: { radiusPixels: Math.round(zoom * 2) },
   });

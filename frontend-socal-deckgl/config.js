@@ -46,17 +46,21 @@
       minZoom: 5,
       maxZoom: 16,
     },
-    // Continuous color stops keyed at the same probability points the legend
-    // gradient uses. Used by the deck.gl HeatmapLayer's colorRange.
+    // Continuous color stops used by the deck.gl HeatmapLayer's colorRange.
+    // Stop 0 is visibly green so 0% risk reads as "safe / mapped, just not
+    // at risk" rather than disappearing. Combined with colorDomain=[0,0.7]
+    // in app.js, this spreads the gradient over the realistic risk range
+    // (~99% of cells are ≤70% risk) so users see the full green→red ramp
+    // rather than only green/yellow.
     riskGradient: [
-      [59, 143, 112, 0],
-      [114, 169, 93, 200],
-      [168, 189, 81, 220],
-      [226, 184, 75, 230],
-      [223, 145, 63, 235],
-      [216, 100, 63, 240],
-      [189, 63, 56, 245],
-      [143, 36, 48, 250],
+      [59, 143, 112, 215],
+      [114, 169, 93, 220],
+      [168, 189, 81, 228],
+      [226, 184, 75, 235],
+      [223, 145, 63, 240],
+      [216, 100, 63, 245],
+      [189, 63, 56, 248],
+      [143, 36, 48, 252],
     ],
   };
 })();
