@@ -311,6 +311,31 @@ h2 {
   height: 100%;
 }
 
+/*
+ * Overlay basemap (the AOI clip trick): a second MapLibre instance that
+ * sits exactly above #map (which holds the deck.gl heatmap). Its
+ * clip-path masks it to "outside the AOI" — so the duplicate basemap
+ * paints the rest of the world but lets the heatmap underneath show
+ * through inside the AOI. Updated by app.js on every move event.
+ */
+#map-clip-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none; /* primary map handles all user input */
+  -webkit-clip-path: url(#openfire-aoi-clip);
+  clip-path: url(#openfire-aoi-clip);
+}
+
+#openfire-aoi-clip-svg {
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  visibility: hidden; /* offscreen, the <clipPath> ref is what matters */
+}
+
 .county-label {
   width: auto;
   height: auto;

@@ -21,6 +21,123 @@ const map = new maplibregl.Map({
   attributionControl: { compact: true },
 });
 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+if (typeof window !== "undefined") { window.__map = map; }
+
+// ── Overlay basemap (AOI clip trick) ──────────────────────────────────
+// A second MapLibre instance rendered above #map (which itself holds
+// the deck.gl heatmap via interleaved MapboxOverlay). The overlay's CSS
+// clip-path is set to "outside AOI" — so the duplicate basemap paints
+// the rest of the world, but the heatmap underneath shows through INSIDE
+// the AOI. The basemap detail (roads, labels, parks) is preserved
+// everywhere because the overlay IS a real basemap, not a flat fill.
+const overlayMap = new maplibregl.Map({
+  container: "map-clip-overlay",
+  style: config.basemapStyle,
+  center: map.getCenter(),
+  zoom: map.getZoom(),
+  bearing: map.getBearing(),
+  pitch: map.getPitch(),
+  minZoom: config.map.minZoom,
+  maxZoom: config.map.maxZoom,
+  interactive: false, // primary map handles all input
+  attributionControl: false,
+});
+if (typeof window !== "undefined") { window.__overlayMap = overlayMap; }
+
+// Bidirectional sync guard: when we copy state from primary → overlay we
+// don't want overlay's "move" event (if any) to fire back.
+let _syncingOverlay = false;
+function syncOverlayCameraFromPrimary() {
+  if (_syncingOverlay) return;
+  _syncingOverlay = true;
+  overlayMap.jumpTo({
+    center: map.getCenter(),
+    zoom: map.getZoom(),
+    bearing: map.getBearing(),
+    pitch: map.getPitch(),
+  });
+  _syncingOverlay = false;
+}
+// Sync on every render frame of the primary map so animation interpolation
+// stays pixel-perfect. `move` fires throughout zoom/pan animations.
+map.on("move", syncOverlayCameraFromPrimary);
+map.on("zoom", syncOverlayCameraFromPrimary);
+map.on("rotate", syncOverlayCameraFromPrimary);
+map.on("pitch", syncOverlayCameraFromPrimary);
+map.on("resize", () => {
+  overlayMap.resize();
+  syncOverlayCameraFromPrimary();
+});
+
+// ── AOI clip-path updater ─────────────────────────────────────────────
+// Recompute the SVG <clipPath> path string from state.aoi on every move
+// event. The path is "outer rect (CCW) + AOI polygons (CW)" with
+// fill-rule=evenodd, which produces the inverse-AOI shape — the overlay
+// basemap renders everywhere EXCEPT inside the AOI. Coordinates are in
+// screen-pixel space (clipPathUnits=userSpaceOnUse).
+const _clipPathEl = () => document.getElementById("openfire-aoi-clip-path");
+const _clipSvgEl = () => document.getElementById("openfire-aoi-clip-svg");
+
+function _ringToSvg(coords) {
+  // coords: array of [lon, lat]. Returns "M x,y L x,y ... Z" in screen px.
+  if (!coords || coords.length === 0) return "";
+  let out = "";
+  for (let i = 0; i < coords.length; i += 1) {
+    const p = map.project(coords[i]);
+    out += `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)} `;
+  }
+  return out + "Z ";
+}
+
+let _clipUpdatePending = false;
+function updateAoiClipPath() {
+  if (_clipUpdatePending) return;
+  _clipUpdatePending = true;
+  requestAnimationFrame(() => {
+    _clipUpdatePending = false;
+    const pathEl = _clipPathEl();
+    const svgEl = _clipSvgEl();
+    if (!pathEl || !svgEl) return;
+    const aoi = state.aoi;
+    const rect = map.getContainer().getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+    // Make sure the SVG viewport matches the map container so
+    // userSpaceOnUse coordinates align with screen pixels.
+    svgEl.setAttribute("viewBox", `0 0 ${w} ${h}`);
+    svgEl.setAttribute("width", String(w));
+    svgEl.setAttribute("height", String(h));
+    // Outer ring: full container, with a small bleed margin so we don't
+    // see a 1px gap at the edge during fast zooms.
+    const margin = 2;
+    let d = `M${-margin},${-margin} L${w + margin},${-margin} L${w + margin},${h + margin} L${-margin},${h + margin} Z `;
+    if (aoi && aoi.features) {
+      for (const feature of aoi.features) {
+        const g = feature.geometry;
+        if (!g) continue;
+        if (g.type === "Polygon") {
+          // For each polygon: outer ring becomes a hole in our clip
+          // (even-odd fill rule), and any inner rings of the AOI feature
+          // become RE-FILLED islands within the hole. Both directions
+          // can be appended; fill-rule handles winding-agnostic toggling.
+          for (let ri = 0; ri < g.coordinates.length; ri += 1) {
+            d += _ringToSvg(g.coordinates[ri]);
+          }
+        } else if (g.type === "MultiPolygon") {
+          for (const poly of g.coordinates) {
+            for (let ri = 0; ri < poly.length; ri += 1) {
+              d += _ringToSvg(poly[ri]);
+            }
+          }
+        }
+      }
+    }
+    pathEl.setAttribute("d", d);
+  });
+}
+
+map.on("move", updateAoiClipPath);
+map.on("resize", updateAoiClipPath);
 
 const state = {
   manifest: null,
@@ -749,12 +866,27 @@ async function boot() {
       state.landMask = null;
     }
 
+    // First clip-path computation now that the AOI is loaded — the path
+    // is empty until this fires, so the overlay basemap covers the whole
+    // map at boot (heat invisible). Once this runs, the AOI hole is cut
+    // and the heat shows through.
+    updateAoiClipPath();
+
     // Wait for the basemap style to load before adding deck.gl overlay
     // and AOI sources (MapLibre rejects addLayer/addSource before "load").
     await new Promise((resolve) => {
       if (map.isStyleLoaded() || map.loaded()) resolve();
       else map.once("load", resolve);
     });
+    // Same wait for the overlay basemap, plus a resize so its canvas
+    // matches the container size before the first render.
+    await new Promise((resolve) => {
+      if (overlayMap.isStyleLoaded() || overlayMap.loaded()) resolve();
+      else overlayMap.once("load", resolve);
+    });
+    overlayMap.resize();
+    syncOverlayCameraFromPrimary();
+    updateAoiClipPath();
 
     // Discover the basemap's water layer id so the heatmap can render
     // BENEATH it via deck.gl's `beforeId` prop. The basemap's own water

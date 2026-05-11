@@ -136,6 +136,26 @@
 
       <section class="map-shell">
         <div id="map" aria-label="OpenFire Southern California AOI risk map"></div>
+        <!--
+          Overlay basemap: a second MapLibre instance rendered above the
+          primary map + deck.gl heatmap. Clipped via CSS clip-path to
+          "outside AOI" — so the duplicate basemap covers the heatmap's
+          kernel-tail bleed in non-AOI regions while preserving full
+          basemap detail (roads, labels, parks) there.
+        -->
+        <div id="map-clip-overlay" aria-hidden="true"></div>
+        <!--
+          SVG host for the AOI clip-path. Lives in the DOM so MapLibre can
+          reference it from CSS via clip-path: url(#openfire-aoi-clip).
+          Updated on every map.move event to track AOI screen position.
+        -->
+        <svg id="openfire-aoi-clip-svg" aria-hidden="true">
+          <defs>
+            <clipPath id="openfire-aoi-clip" clipPathUnits="userSpaceOnUse">
+              <path id="openfire-aoi-clip-path" d="" fill-rule="evenodd" />
+            </clipPath>
+          </defs>
+        </svg>
         <div id="map-tooltip" class="map-tooltip" hidden></div>
       </section>
     </main>
