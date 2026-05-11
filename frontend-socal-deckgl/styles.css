@@ -327,6 +327,12 @@ h2 {
   -webkit-clip-path: url(#openfire-aoi-clip);
   clip-path: url(#openfire-aoi-clip);
 }
+/* MapLibre creates a canvas inside the container which has its own
+ * pointer-events. Disable on every descendant so events fall through
+ * to the primary map + deck.gl picker. */
+#map-clip-overlay * {
+  pointer-events: none !important;
+}
 
 #openfire-aoi-clip-svg {
   position: absolute;
