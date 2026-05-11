@@ -96,6 +96,10 @@
             <span class="disclosure-icon" aria-hidden="true"></span>
           </button>
           <div id="time-panel-body" class="panel-body">
+            <div class="timeline-meta">
+              <span id="timeline-date" aria-live="polite">—</span>
+              <span id="timeline-position">— / —</span>
+            </div>
             <div class="panel-actions">
               <button id="playback-toggle" class="icon-button" type="button" aria-label="Play timeline">
                 Play
@@ -112,6 +116,10 @@
                 disabled
                 aria-label="Prediction window"
               />
+              <div class="timeline-range">
+                <span id="timeline-range-start">—</span>
+                <span id="timeline-range-end">—</span>
+              </div>
             </div>
           </div>
         </section>
@@ -152,7 +160,7 @@
         <svg id="openfire-aoi-clip-svg" aria-hidden="true">
           <defs>
             <clipPath id="openfire-aoi-clip" clipPathUnits="userSpaceOnUse">
-              <path id="openfire-aoi-clip-path" d="" fill-rule="evenodd" />
+              <path id="openfire-aoi-clip-path" d="" fill-rule="evenodd" clip-rule="evenodd" />
             </clipPath>
           </defs>
         </svg>

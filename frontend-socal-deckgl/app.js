@@ -480,9 +480,6 @@ function renderAoi() {
   } else {
     map.getSource(sourceId).setData(state.aoi);
   }
-  // (Black AOI line layer removed — the water cover gives an implicit
-  // boundary because heat is only shown over land within the AOI cells'
-  // bbox. A hard outline is unnecessary and visually heavy.)
   // County labels at polygon centroid
   const labelFeatures = state.aoi.features
     .map((feature) => {
@@ -594,6 +591,34 @@ async function loadSnapshot(windowEntry) {
   return payload;
 }
 
+// Format an ISO date string as 'May 2, 2026'. We parse as UTC midnight AND
+// format in the UTC timezone so the calendar day matches the manifest's
+// window_start_date exactly — without this, '2026-05-02' would render as
+// 'May 1, 2026' for PST users (UTC midnight is PDT-7 = previous day evening).
+const _dateFmt = new Intl.DateTimeFormat("en-US", {
+  year: "numeric", month: "short", day: "numeric", timeZone: "UTC",
+});
+function _formatWindowDate(iso) {
+  if (!iso) return "—";
+  const [y, m, d] = iso.split("-").map((n) => Number(n));
+  if (!y || !m || !d) return iso;
+  return _dateFmt.format(new Date(Date.UTC(y, m - 1, d)));
+}
+
+function updateTimelineUi() {
+  const total = state.windows.length;
+  const idx = state.activeIndex;
+  const active = state.windows[idx];
+  const dateEl = document.getElementById("timeline-date");
+  const posEl = document.getElementById("timeline-position");
+  if (dateEl) dateEl.textContent = _formatWindowDate(active?.window_start_date);
+  if (posEl) posEl.textContent = total ? `${idx + 1} / ${total}` : "—";
+  const startEl = document.getElementById("timeline-range-start");
+  const endEl = document.getElementById("timeline-range-end");
+  if (startEl) startEl.textContent = _formatWindowDate(state.windows[0]?.window_start_date);
+  if (endEl) endEl.textContent = _formatWindowDate(state.windows[total - 1]?.window_start_date);
+}
+
 async function setActiveIndex(index) {
   const boundedIndex = Math.max(0, Math.min(index, state.windows.length - 1));
   const windowEntry = state.windows[boundedIndex];
@@ -601,6 +626,7 @@ async function setActiveIndex(index) {
   state.activeIndex = boundedIndex;
   const slider = document.getElementById("timeline-slider");
   if (slider) slider.value = String(boundedIndex);
+  updateTimelineUi();
   try {
     const snapshot = await loadSnapshot(windowEntry);
     state.activeWindow = windowEntry;
@@ -619,6 +645,7 @@ function configureTimeline() {
   slider.step = "1";
   slider.disabled = state.windows.length < 2;
   slider.value = String(state.activeIndex);
+  updateTimelineUi();
 }
 
 function bindControls() {
