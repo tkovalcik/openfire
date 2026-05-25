@@ -1,7 +1,13 @@
 # OpenFire Architecture
 
 End-to-end data flow, component responsibilities, durable contracts, and the
-main design decisions behind the OpenFire capstone ML pipeline.
+main design decisions behind the OpenFire ML pipeline.
+
+![OpenFire architecture overview](img/architecture.png)
+
+The diagram above is the high-level view. The mermaid source below is kept as
+the editable source of truth — render it if you want to extend or regenerate
+the diagram.
 
 ---
 
@@ -99,7 +105,7 @@ flowchart TD
 - **AOI and grid:** production scope is Kern, Los Angeles, San Luis Obispo,
   and Santa Barbara counties. Both training and inference load the pinned GEE
   FeatureCollection asset
-  `projects/msds603-mlops-project/assets/socal_4county_grid_v1`, which contains
+  `projects/${GCP_PROJECT_ID}/assets/socal_4county_grid_v1`, which contains
   `65,687` canonical 1 km cells. Dynamic `coveringGrid` is only a fallback for
   non-production AOIs.
 - **Date grid:** feature windows follow the 5-day cadence anchored at
@@ -213,9 +219,9 @@ The inference `monitor` step compares each current
 `gold_features_inference` window against a sampled training reference using
 Evidently OSS `0.7.21` via the `evidently.legacy.*` API. It writes:
 
-- `gs://openfire/monitoring/reports/report_YYYYMMDD.html`
-- `gs://openfire/monitoring/snapshots/snapshot_YYYYMMDD.json`
-- `gs://openfire/monitoring/index.json`
+- `gs://${OPENFIRE_GCS_BUCKET}/monitoring/reports/report_YYYYMMDD.html`
+- `gs://${OPENFIRE_GCS_BUCKET}/monitoring/snapshots/snapshot_YYYYMMDD.json`
+- `gs://${OPENFIRE_GCS_BUCKET}/monitoring/index.json`
 
 The `openfire-monitoring` Cloud Run service is read-only. It lists historical
 reports, serves report HTML, and exposes `/summary/latest`.
@@ -280,7 +286,7 @@ OPENFIRE_USE_LIVE_MANIFEST=true \
 uvicorn src.ui_socal.app:app --host 127.0.0.1 --port 8090
 ```
 
-That mode still reads `gs://openfire/predictions/manifest.json` and referenced
+That mode still reads `gs://${OPENFIRE_GCS_BUCKET}/predictions/manifest.json` and referenced
 snapshots through `/data/*`, but it does not emit UI performance, Web Vitals, or
 Faro telemetry. The checked-in three-window demo manifest should remain only as
 an offline fallback and fixture for deterministic unit tests.
@@ -301,7 +307,7 @@ an offline fallback and fixture for deterministic unit tests.
 | MLflow server | Experiment tracking and registry | Registry name: `openfire-gold`. |
 | BigQuery dataset `openfire_features` | Silver, gold, inference, prediction tables | Project configured by deployment environment. |
 | BigQuery table `openfire_features.ui_performance_events` | Browser UI performance telemetry | Partitioned by `received_at`, clustered by UI variant, event, window, and render mode. |
-| GCS bucket `openfire` | Gold Parquet, predictions, monitoring artifacts | Prediction objects live under `gs://openfire/predictions/`. |
+| GCS bucket `${OPENFIRE_GCS_BUCKET}` | Gold Parquet, predictions, monitoring artifacts | Prediction objects live under `gs://${OPENFIRE_GCS_BUCKET}/predictions/`. |
 
 IAM notes:
 
