@@ -96,7 +96,7 @@ WHERE SAFE_CAST(TRIM(fire_date) AS DATE) < window_start_date
 ## 7. Observed BigQuery result
 
 From running Section 1 of `07_5_fire_date_temporal_check.sql` on
-`msds603-mlops-project.openfire_features.silver_features_all_years`:
+`${GCP_PROJECT_ID}.openfire_features.silver_features_all_years`:
 
 | Metric | Value |
 | --- | --- |
