@@ -19,7 +19,7 @@ happens, nothing here affects the model.
 ## Input table
 
 ```
-msds603-mlops-project.openfire_features.silver_features_all_years
+${GCP_PROJECT_ID}.openfire_features.silver_features_all_years
 ```
 
 Required columns: `timestamp`, `latitude`, `longitude`, `historical_fire_dates`.

@@ -150,7 +150,7 @@ a `PARTITION BY` clause on `CREATE OR REPLACE TABLE`, only `OVER
 (PARTITION BY ...)` window functions inside CTEs. **Therefore
 `gold_features` and `silver_features_all_years` are not table-partitioned**
 — they're flat ~39M-row tables. (To verify, run `bq show --schema
-msds603-mlops-project:openfire_features.gold_features` or
+${GCP_PROJECT_ID}:openfire_features.gold_features` or
 `SELECT table_name, partition_id FROM \`region-us\`.INFORMATION_SCHEMA.PARTITIONS WHERE table_name = 'gold_features'`.)
 
 For `predictions_history` we should improve on this: `PARTITION BY

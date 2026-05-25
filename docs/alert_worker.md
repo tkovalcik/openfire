@@ -18,7 +18,7 @@ would send.
 Subscriptions default to:
 
 ```text
-msds603-mlops-project.openfire_features.ui_subscriptions
+${GCP_PROJECT_ID}.openfire_features.ui_subscriptions
 ```
 
 Expected columns:
@@ -33,7 +33,7 @@ risk_threshold FLOAT64
 ZIP centroids default to:
 
 ```text
-msds603-mlops-project.openfire_features.zip_centroids
+${GCP_PROJECT_ID}.openfire_features.zip_centroids
 ```
 
 Expected columns:
@@ -50,7 +50,7 @@ candidates.
 Alert delivery history defaults to:
 
 ```text
-msds603-mlops-project.openfire_features.ui_alert_deliveries
+${GCP_PROJECT_ID}.openfire_features.ui_alert_deliveries
 ```
 
 Expected columns are auto-created by the worker when real sending is enabled:
@@ -126,7 +126,7 @@ The same workflow can optionally create or update a Cloud Scheduler trigger with
 The Scheduler target is the Cloud Run Jobs API:
 
 ```text
-https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/msds603-mlops-project/jobs/openfire-alert-worker:run
+https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${GCP_PROJECT_ID}/jobs/openfire-alert-worker:run
 ```
 
 The scheduler uses OAuth as required for `*.googleapis.com` targets. The runtime
