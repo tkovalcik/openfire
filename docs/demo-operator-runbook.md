@@ -5,20 +5,20 @@
 - Cloud Run URL: `https://openfire-api-ivdriimizq-uc.a.run.app`
 - Region: `us-central1`
 - Service: `openfire-api`
-- Project: `msds603-mlops-project`
+- Project: `${GCP_PROJECT_ID}`
 
 ## Frozen Demo Artifacts
 
-- Model: `gs://openfire/openfire/demo/models/openfire-baseline/model-20260401T190000Z/model.joblib`
-- Features: `gs://openfire/openfire/demo/features/sample-bayarea/ds-20260401T190000Z/features.csv`
-- GeoJSON: `gs://openfire/openfire/demo/geojson/risk-layer/demo-20260401T190000Z/risk.geojson`
+- Model: `gs://${OPENFIRE_GCS_BUCKET}/openfire/demo/models/openfire-baseline/model-20260401T190000Z/model.joblib`
+- Features: `gs://${OPENFIRE_GCS_BUCKET}/openfire/demo/features/sample-bayarea/ds-20260401T190000Z/features.csv`
+- GeoJSON: `gs://${OPENFIRE_GCS_BUCKET}/openfire/demo/geojson/risk-layer/demo-20260401T190000Z/risk.geojson`
 
 ## Exact Deploy Command
 
 ```bash
 gcloud run deploy openfire-api \
-  --image=us-central1-docker.pkg.dev/msds603-mlops-project/openfire/openfire-api:IMAGE_TAG \
-  --project=msds603-mlops-project \
+  --image=us-central1-docker.pkg.dev/${GCP_PROJECT_ID}/openfire/openfire-api:IMAGE_TAG \
+  --project=${GCP_PROJECT_ID} \
   --region=us-central1 \
   --platform=managed \
   --port=8000 \
@@ -29,7 +29,7 @@ gcloud run deploy openfire-api \
   --min-instances=1 \
   --max-instances=5 \
   --execution-environment=gen2 \
-  --service-account=openfire-api-runner@msds603-mlops-project.iam.gserviceaccount.com \
+  --service-account=<API_RUNTIME_SERVICE_ACCOUNT> \
   --allow-unauthenticated \
   --env-vars-file=cloudrun.demo.env.yaml
 ```
@@ -51,7 +51,7 @@ List revisions:
 
 ```bash
 gcloud run revisions list \
-  --project=msds603-mlops-project \
+  --project=${GCP_PROJECT_ID} \
   --region=us-central1 \
   --service=openfire-api
 ```
@@ -60,7 +60,7 @@ Roll back to a known-good revision:
 
 ```bash
 gcloud run services update-traffic openfire-api \
-  --project=msds603-mlops-project \
+  --project=${GCP_PROJECT_ID} \
   --region=us-central1 \
   --to-revisions=REVISION_NAME=100
 ```

@@ -3,8 +3,8 @@
 **From:** Sebastian (`sebaleksander@gmail.com`)
 **Date:** 2026-05-07
 **Branch:** `sebdevUImaplibre` (off `dev`)
-**Target service:** `openfire-ui-socal-deckgl` (Cloud Run, `us-central1`, project `msds603-mlops-project`)
-**Live URL of current deploy:** https://openfire-ui-socal-deckgl-222683846563.us-central1.run.app (still the older deck.gl prototype — replace by deploying this branch)
+**Target service:** `openfire-ui-socal-deckgl` (Cloud Run, `us-central1`, project `${GCP_PROJECT_ID}`)
+**Live URL of current deploy:** `openfire-ui-socal-deckgl` Cloud Run service (look up URL with `gcloud run services describe openfire-ui-socal-deckgl --region us-central1`)
 
 ---
 
@@ -14,11 +14,11 @@
 >
 > **Stack:** FastAPI (Python 3.11) backend + static frontend (vanilla JS, no framework). Frontend uses **MapLibre GL JS 4.7** for the basemap and **deck.gl 9** for a GPU-rendered heatmap overlay. They share a single WebGL canvas via `MapboxOverlay({ interleaved: true })`. The `HeatmapLayer` renders *underneath* the basemap's water layer using `beforeId: state.waterBeforeId` — that gives free pixel-perfect water clipping.
 >
-> **Repo:** `tkovalcik/openfire`, branch `sebdevUImaplibre`. The frontend lives in [frontend-socal-deckgl/](../frontend-socal-deckgl/). The FastAPI app that serves it is [src/ui_socal/app.py](../src/ui_socal/app.py). The Cloud Run service is `openfire-ui-socal-deckgl` in GCP project `msds603-mlops-project`, region `us-central1`, deployed via [.github/workflows/ui_socal_deckgl.yml](../.github/workflows/ui_socal_deckgl.yml) (manual `workflow_dispatch`).
+> **Repo:** `tkovalcik/openfire`, branch `sebdevUImaplibre`. The frontend lives in [frontend-socal-deckgl/](../frontend-socal-deckgl/). The FastAPI app that serves it is [src/ui_socal/app.py](../src/ui_socal/app.py). The Cloud Run service is `openfire-ui-socal-deckgl` in GCP project `${GCP_PROJECT_ID}`, region `us-central1`, deployed via [.github/workflows/ui_socal_deckgl.yml](../.github/workflows/ui_socal_deckgl.yml) (manual `workflow_dispatch`).
 >
-> **Data flow:** the live manifest at `gs://openfire/predictions/manifest.json` lists ~26 risk windows (every 5 days, late 2025 → present). Each window is a GeoJSON of grid cells with `risk_probability` ∈ [0,1]. The frontend fetches the manifest, then per-window streams via FastAPI's `/data/{name}` proxy (which checks `STATIC_ROOT/data/` first, then GCS).
+> **Data flow:** the live manifest at `gs://${OPENFIRE_GCS_BUCKET}/predictions/manifest.json` lists ~26 risk windows (every 5 days, late 2025 → present). Each window is a GeoJSON of grid cells with `risk_probability` ∈ [0,1]. The frontend fetches the manifest, then per-window streams via FastAPI's `/data/{name}` proxy (which checks `STATIC_ROOT/data/` first, then GCS).
 >
-> **Persistence:** alert subscriptions go to `POST /api/subscriptions` → BigQuery table `msds603-mlops-project.openfire_features.ui_subscriptions` (auto-created on first insert).
+> **Persistence:** alert subscriptions go to `POST /api/subscriptions` → BigQuery table `${GCP_PROJECT_ID}.openfire_features.ui_subscriptions` (auto-created on first insert).
 >
 > **Read first:** [docs/problems_solved.md](problems_solved.md) for the gotchas we already hit. Don't repeat them.
 
@@ -97,7 +97,7 @@
 ```bash
 # auth check
 gcloud auth list                                  # should show your account active
-gcloud config set project msds603-mlops-project   # so your default project is right
+gcloud config set project ${GCP_PROJECT_ID}   # so your default project is right
 gh auth status                                    # should show authenticated
 ```
 
@@ -119,7 +119,7 @@ gh workflow run ui_socal_deckgl.yml --ref dev
 # or via UI: Actions → "Deploy SoCal UI deck.gl Prototype" → Run workflow
 ```
 
-That builds `docker/Dockerfile.ui_socal_deckgl`, pushes to Artifact Registry as `us-central1-docker.pkg.dev/msds603-mlops-project/openfire/ui-socal-deckgl:<sha>`, and deploys to Cloud Run service `openfire-ui-socal-deckgl`.
+That builds `docker/Dockerfile.ui_socal_deckgl`, pushes to Artifact Registry as `us-central1-docker.pkg.dev/${GCP_PROJECT_ID}/openfire/ui-socal-deckgl:<sha>`, and deploys to Cloud Run service `openfire-ui-socal-deckgl`.
 
 Watch the deploy:
 ```bash
@@ -130,7 +130,7 @@ gh run watch
 ### C. Smoke test the deployed service
 ```bash
 URL=$(gcloud run services describe openfire-ui-socal-deckgl \
-  --project msds603-mlops-project --region us-central1 \
+  --project ${GCP_PROJECT_ID} --region us-central1 \
   --format 'value(status.url)')
 
 curl -fsS "$URL/" -o /dev/null && echo OK                  # index.html
@@ -143,7 +143,7 @@ curl -fsS -X POST "$URL/api/subscriptions" \
   -d '{"email":"smoketest@openfire.dev","zip":"94110","risk_threshold":0.5}'
 # → {"status":"ok"}
 
-bq query --project_id=msds603-mlops-project --use_legacy_sql=false \
+bq query --project_id=${GCP_PROJECT_ID} --use_legacy_sql=false \
   'SELECT COUNT(*) FROM openfire_features.ui_subscriptions'
 # → 1 (or whatever count)
 ```
@@ -161,7 +161,7 @@ bq mk --table \
   --time_partitioning_field=created_at \
   --time_partitioning_type=DAY \
   --clustering_fields=zip,email \
-  msds603-mlops-project:openfire_features.ui_subscriptions \
+  ${GCP_PROJECT_ID}:openfire_features.ui_subscriptions \
   created_at:TIMESTAMP:REQUIRED,email:STRING:REQUIRED,zip:STRING:REQUIRED,risk_threshold:FLOAT64,source_ip_hash:STRING,user_agent:STRING,app_version:STRING
 ```
 
@@ -177,7 +177,7 @@ Schema reference (matches [src/ui_socal/app.py `_subs_schema()`](../src/ui_socal
 | `user_agent` | STRING | NULLABLE | truncated to 512 chars |
 | `app_version` | STRING | NULLABLE | git SHA from `OPENFIRE_UI_VERSION` |
 
-**Required IAM** on the Cloud Run runtime SA (`openfire-ui-socal-runner@msds603-mlops-project.iam.gserviceaccount.com`):
+**Required IAM** on the Cloud Run runtime SA (`<SERVICE_ACCOUNT>`):
 - `roles/bigquery.dataEditor` on dataset `openfire_features` (insert + create-table)
 - `roles/bigquery.jobUser` on the project (run insertion jobs)
 - `roles/storage.objectViewer` on bucket `openfire` (data proxy)
@@ -186,7 +186,7 @@ Existing perf table proves all of these are already granted — no new IAM neede
 
 To see incoming subscriptions:
 ```bash
-bq query --project_id=msds603-mlops-project --use_legacy_sql=false \
+bq query --project_id=${GCP_PROJECT_ID} --use_legacy_sql=false \
   'SELECT created_at, email, zip, risk_threshold, app_version
    FROM openfire_features.ui_subscriptions
    ORDER BY created_at DESC LIMIT 20'
@@ -203,7 +203,7 @@ bq query --project_id=msds603-mlops-project --use_legacy_sql=false \
 | Change risk color gradient | [frontend-socal-deckgl/config.js](../frontend-socal-deckgl/config.js) (`riskGradient`) |
 | Add a field to subscribe form | [frontend-socal-deckgl/index.html](../frontend-socal-deckgl/index.html) (`#subscribe-form`) + [frontend-socal-deckgl/app.js](../frontend-socal-deckgl/app.js) (`bindSubscribeForm`) + [src/ui_socal/app.py](../src/ui_socal/app.py) (`SubscriptionRequest`, `_subs_schema`, `create_subscription`) |
 | Add a new API endpoint | [src/ui_socal/app.py](../src/ui_socal/app.py). **Register before** the catch-all `@app.get("/{path:path}")` near line 446. |
-| Add a new GeoJSON window source | Push to GCS at `gs://openfire/predictions/`, then update [`gs://openfire/predictions/manifest.json`](https://console.cloud.google.com/storage/browser/openfire/predictions). The frontend picks it up automatically (live manifest is fetched per session). |
+| Add a new GeoJSON window source | Push to GCS at `gs://${OPENFIRE_GCS_BUCKET}/predictions/`, then update [`gs://${OPENFIRE_GCS_BUCKET}/predictions/manifest.json`](https://console.cloud.google.com/storage/browser/openfire/predictions). The frontend picks it up automatically (live manifest is fetched per session). |
 | Change Docker / container | [docker/Dockerfile.ui_socal_deckgl](../docker/Dockerfile.ui_socal_deckgl), [docker/requirements.ui_socal.txt](../docker/requirements.ui_socal.txt) |
 | Change deploy params | [.github/workflows/ui_socal_deckgl.yml](../.github/workflows/ui_socal_deckgl.yml) |
 | Add a frontend asset test | [tests/test_frontend_socal_assets.py](../tests/test_frontend_socal_assets.py) |

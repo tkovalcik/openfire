@@ -1,7 +1,7 @@
 # OpenFire MLflow Team Server Runbook
 
-This runbook sets up the **course-required shared MLflow tracking server** on a single
-Google Compute Engine VM inside the existing `msds603-mlops-project` project.
+This runbook sets up the **shared MLflow tracking server** on a single
+Google Compute Engine VM inside the `${GCP_PROJECT_ID}` project.
 
 This MLflow server is **separate** from the deployed OpenFire demo:
 
@@ -28,7 +28,7 @@ Storage layout on the VM:
 
 Current team tracking URL:
 
-- `http://34.58.62.126:5000`
+- `<MLFLOW_TRACKING_URI>`
 
 ## 1. Create the VM and firewall rule
 
@@ -36,7 +36,7 @@ Run on your laptop:
 
 ```bash
 gcloud auth login
-gcloud config set project msds603-mlops-project
+gcloud config set project ${GCP_PROJECT_ID}
 gcloud services enable compute.googleapis.com
 
 gcloud compute instances create mlflow-server \
@@ -117,7 +117,7 @@ Run on your laptop:
 gcloud compute instances list
 ```
 
-Use the `EXTERNAL_IP` from the `mlflow-server` row. The current VM IP is `34.58.62.126`.
+Use the `EXTERNAL_IP` from the `mlflow-server` row.
 
 MLflow UI URL:
 
@@ -174,7 +174,7 @@ PYTHONPATH=src python -m model.train_baseline \
   --experiment-name "$MLFLOW_EXPERIMENT_NAME"
 ```
 
-## 8. Submission checklist
+## 8. Verification checklist
 
 Capture all of these:
 
@@ -185,6 +185,6 @@ Capture all of these:
 
 ## Notes
 
-- This VM setup is intentionally **course-simple**, not production-hardened.
-- It uses local SQLite and local artifact storage on the VM because that is what the course asks for.
+- This VM setup is intentionally **simple**, not production-hardened.
+- It uses local SQLite and local artifact storage on the VM for ease of setup.
 - The OpenFire Cloud Run demo remains GCS-backed for reliability and does not depend on MLflow at runtime.

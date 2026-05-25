@@ -139,7 +139,7 @@ statement that can be highlighted and run by itself in the BigQuery
 console. The CTE chain is intentionally repeated across sections
 because BigQuery scopes CTEs to a single statement.
 
-1. Open the BigQuery console for the `msds603-mlops-project` project.
+1. Open the BigQuery console for the `${GCP_PROJECT_ID}` project.
 2. Open `sql/exploration/08_interaction_feature_candidates.sql` in
    the editor.
 3. Read **Section 0** at the top — it explains the run order and
