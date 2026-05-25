@@ -59,8 +59,8 @@ The workflow takes ~5 minutes. When it finishes, the deployed Cloud Run revision
 ## What this deploys
 
 - Docker image built from `docker/Dockerfile.ui_socal_deckgl`
-- Pushed to Artifact Registry: `us-central1-docker.pkg.dev/msds603-mlops-project/openfire/ui-socal-deckgl:<commit-sha>`
-- Deployed as Cloud Run service `openfire-ui-socal-deckgl` (project `msds603-mlops-project`, region `us-central1`)
+- Pushed to Artifact Registry: `us-central1-docker.pkg.dev/${GCP_PROJECT_ID}/openfire/ui-socal-deckgl:<commit-sha>`
+- Deployed as Cloud Run service `openfire-ui-socal-deckgl` (project `${GCP_PROJECT_ID}`, region `us-central1`)
 
 Full deploy spec lives in [`.github/workflows/ui_socal_deckgl.yml`](../.github/workflows/ui_socal_deckgl.yml).
 
@@ -82,7 +82,7 @@ Optional — only needed for looking at logs, BigQuery rows, etc. (not for deplo
 
 ```bash
 gcloud auth login                                 # use the Google account that has access to the project
-gcloud config set project msds603-mlops-project
+gcloud config set project ${GCP_PROJECT_ID}
 gcloud run services describe openfire-ui-socal-deckgl --region us-central1
 ```
 

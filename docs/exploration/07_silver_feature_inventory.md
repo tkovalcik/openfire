@@ -35,7 +35,7 @@ anywhere — it is safe to copy-paste into the BigQuery console.
   No features yet.
 - **Silver** (this layer) is cleaned, conformed, joined per cell-window
   rows. Concretely the merged table is
-  `msds603-mlops-project.openfire_features.silver_features_all_years`
+  `${GCP_PROJECT_ID}.openfire_features.silver_features_all_years`
   produced by `data_pipelines/04_merge_silver_years.sql`.
 - **Gold** is model-ready: the target (`burned_in_next_15_days`),
   windowed / lag features, and `days_since_last_burn` are added by
@@ -117,7 +117,7 @@ read-only documentation.
 ## Observed BigQuery Results
 
 Snapshot from running the SQL on
-`msds603-mlops-project.openfire_features.silver_features_all_years`.
+`${GCP_PROJECT_ID}.openfire_features.silver_features_all_years`.
 Re-run periodically; numbers will drift as new years are appended.
 
 ### Section 3 — Row counts and date range
