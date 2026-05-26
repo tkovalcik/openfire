@@ -94,5 +94,3 @@ tests/                 pytest suite
 ```
 
 ---
-
-Built by [@tkovalcik](https://github.com/tkovalcik).
