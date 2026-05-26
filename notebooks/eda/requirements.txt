@@ -1,0 +1,37 @@
+# OpenFire EDA Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core geospatial
+geopandas>=0.14.0
+shapely>=2.0
+pyproj>=3.6
+fiona>=1.9
+
+# Raster processing (Notebook 2)
+rasterio>=1.3
+rasterstats>=0.19
+
+# Visualization
+matplotlib>=3.8
+contextily>=1.4          # Basemap tiles for static plots
+mapclassify>=2.6         # Classification schemes for choropleths
+
+# Interactive exploration (Notebook 1, Section C)
+panel>=1.3
+bokeh>=3.3
+pydeck>=0.8
+folium>=0.15
+branca>=0.7
+
+# Data & utilities
+pandas>=2.1
+numpy>=1.26
+tqdm>=4.66                # Progress bars for long loops
+requests>=2.31            # Downloading shapefiles
+
+# Video export
+# Also requires ffmpeg installed on system:
+#   macOS: brew install ffmpeg
+#   Ubuntu: sudo apt install ffmpeg
+#   Windows: choco install ffmpeg (or download from ffmpeg.org)
+Pillow>=10.0
