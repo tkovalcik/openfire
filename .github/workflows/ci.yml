@@ -38,7 +38,7 @@ jobs:
           python -m pip install --upgrade pip
           # The repo does not currently expose a single pyproject/requirements-dev file,
           # so CI installs the pinned API/runtime set plus test/lint dependencies.
-          python -m pip install -r docker/requirements.api.txt pyarrow pytest ruff httpx matplotlib
+          python -m pip install -r docker/requirements.api.txt pyarrow pytest ruff httpx matplotlib google-cloud-bigquery "evidently==0.7.21"
 
       - name: Run Ruff
         shell: bash
@@ -50,4 +50,4 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pytest
+          python -m pytest -m "not integration"

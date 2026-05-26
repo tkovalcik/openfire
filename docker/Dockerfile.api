@@ -42,7 +42,6 @@ RUN groupadd --system --gid 10001 openfire && \
 # Copy only what the API actually needs: the virtualenv, application source, and optionally model files.
 COPY --from=builder /opt/venv /opt/venv
 COPY src /app/src
-COPY frontend /app/frontend
 
 # Create directories commonly mounted at runtime. Chown once so the final image stays non-root.
 RUN mkdir -p /app/artifacts /app/.cache && \

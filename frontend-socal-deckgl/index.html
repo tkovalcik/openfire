@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenFire — Hyperlocal Wildfire Risk</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-block">
+          <p class="eyebrow">OpenFire</p>
+          <h1>Hyperlocal wildfire risk</h1>
+          <ul class="hero-bullets">
+            <li><strong>NWS</strong> issues blunt alerts for entire counties.</li>
+            <li><strong>Other services</strong> alert after a fire starts.</li>
+            <li><strong>OpenFire</strong> predicts hyperlocal wildfire risk before ignition.</li>
+          </ul>
+        </div>
+
+        <section class="panel" id="lookup-panel">
+          <h2>Find your location</h2>
+          <p class="lede">Enter an address or place to see its predicted risk.</p>
+          <form id="address-form" novalidate>
+            <label class="field">
+              <span class="visually-hidden">Address</span>
+              <input
+                id="address-input"
+                type="text"
+                name="address"
+                autocomplete="street-address"
+                placeholder="123 Main St, Santa Barbara"
+              />
+            </label>
+            <button type="submit" class="primary-button">Look up</button>
+            <p id="address-result" class="status-message" role="status" aria-live="polite"></p>
+          </form>
+        </section>
+
+        <section class="panel" id="subscribe-panel">
+          <h2>Get alerts for your area</h2>
+          <p class="lede">Be notified when risk in your ZIP crosses your threshold.</p>
+          <form id="subscribe-form" novalidate>
+            <label class="field">
+              <span>Email</span>
+              <input
+                type="email"
+                name="email"
+                required
+                autocomplete="email"
+                placeholder="you@example.com"
+              />
+            </label>
+            <label class="field">
+              <span>ZIP code</span>
+              <input
+                type="text"
+                name="zip"
+                required
+                pattern="\d{5}"
+                maxlength="5"
+                inputmode="numeric"
+                autocomplete="postal-code"
+                placeholder="93001"
+              />
+            </label>
+            <label class="field">
+              <span>Alert above <output id="threshold-output">50</output>%</span>
+              <input
+                type="range"
+                name="threshold"
+                min="0"
+                max="100"
+                step="5"
+                value="50"
+              />
+            </label>
+            <button type="submit" class="primary-button">Subscribe</button>
+            <p id="subscribe-status" class="status-message" role="status" aria-live="polite"></p>
+          </form>
+        </section>
+
+        <section class="panel collapsible-panel" data-collapsible-panel>
+          <button
+            class="panel-toggle"
+            type="button"
+            aria-expanded="true"
+            aria-controls="time-panel-body"
+          >
+            <span>Time</span>
+            <span class="disclosure-icon" aria-hidden="true"></span>
+          </button>
+          <div id="time-panel-body" class="panel-body">
+            <div class="panel-actions">
+              <button id="playback-toggle" class="icon-button" type="button" aria-label="Play timeline">
+                Play
+              </button>
+            </div>
+            <div class="timeline-control">
+              <input
+                id="timeline-slider"
+                type="range"
+                min="0"
+                max="0"
+                step="1"
+                value="0"
+                disabled
+                aria-label="Prediction window"
+              />
+            </div>
+          </div>
+        </section>
+
+        <section class="panel collapsible-panel" data-collapsible-panel>
+          <button
+            class="panel-toggle"
+            type="button"
+            aria-expanded="true"
+            aria-controls="legend-panel-body"
+          >
+            <span>Legend</span>
+            <span class="disclosure-icon" aria-hidden="true"></span>
+          </button>
+          <div id="legend-panel-body" class="panel-body">
+            <div class="legend-gradient" aria-hidden="true"></div>
+            <div class="legend-axis"><span>Low</span><span>0.5</span><span>High</span></div>
+            <p class="legend-caption">Fire-risk probability over the next 15 days. Hover any point for the exact value.</p>
+          </div>
+        </section>
+      </aside>
+
+      <section class="map-shell">
+        <div id="map" aria-label="OpenFire Southern California AOI risk map"></div>
+        <div id="map-tooltip" class="map-tooltip" hidden></div>
+      </section>
+    </main>
+
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script src="https://unpkg.com/deck.gl@^9.0.0/dist.min.js"></script>
+    <script src="./runtime-config.js"></script>
+    <script src="./config.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
