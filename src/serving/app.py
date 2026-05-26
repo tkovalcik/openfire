@@ -3,13 +3,11 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 try:
     from common.storage import StorageClient
@@ -67,7 +65,6 @@ def create_app(
     resolved_settings = settings or get_settings()
     service_config = config or ServiceConfig.from_settings(resolved_settings)
     resolved_storage = storage or StorageClient.from_settings(resolved_settings)
-    frontend_dir = Path(__file__).resolve().parents[2] / "frontend"
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -141,6 +138,34 @@ def create_app(
     async def handle_model_load_error(request: Request, exc: ModelLoadError) -> JSONResponse:
         log_event("model_unavailable", path=str(request.url.path), detail=str(exc))
         return _model_unavailable_response(request.app.state.service_config)
+
+    @app.get("/")
+    async def root(request: Request) -> JSONResponse:
+        config: ServiceConfig = request.app.state.service_config
+        service: PredictionService | None = getattr(request.app.state, "prediction_service", None)
+        status = "ok" if service is not None else "degraded"
+        model_source = service.loaded_model.model_source if service is not None else config.model_source
+        model_version = service.loaded_model.model_version if service is not None else None
+        return JSONResponse(
+            status_code=200,
+            content={
+                "service": "openfire-api",
+                "message": "OpenFire Serving API",
+                "status": status,
+                "runtime_mode": config.runtime_mode,
+                "model_loaded": service is not None,
+                "model_source": model_source,
+                "model_version": model_version,
+                "endpoints": {
+                    "health": "/health",
+                    "metadata": "/metadata",
+                    "demo_geojson": "/demo/geojson",
+                    "predict": "/predict",
+                    "predict_geojson": "/predict_geojson",
+                    "docs": "/docs",
+                },
+            },
+        )
 
     @app.get("/health", response_model=HealthResponse)
     async def health(request: Request) -> HealthResponse:
@@ -247,9 +272,6 @@ def create_app(
             predictions=response.predictions,
             feature_collection=feature_collection,
         )
-
-    if frontend_dir.exists():
-        app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
 
     return app
 

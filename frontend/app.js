@@ -86,11 +86,11 @@ function updateMetadataPanel({ geojsonMetadata = {}, backendMetadata = {}, sourc
     "Unavailable";
   const inferenceDate =
     geojsonMetadata.inference_date ||
-    activeSource?.fallbackInferenceDate ||
+    config.dataSource.fallbackInferenceDate ||
     new Date().toISOString().slice(0, 10);
   const dataWindow =
     geojsonMetadata.data_window ||
-    activeSource?.fallbackDataWindow ||
+    config.dataSource.fallbackDataWindow ||
     "Unavailable";
 
   modelVersionNode.textContent = modelVersion;

@@ -1,14 +1,7 @@
-const backendOverride = new URLSearchParams(window.location.search).get("backend");
-const isLocalStaticFrontend = ["127.0.0.1:8080", "localhost:8080"].includes(window.location.host);
-const inferredBackendBaseUrl =
-  window.location.protocol.startsWith("http") && !isLocalStaticFrontend
-    ? window.location.origin
-    : "http://127.0.0.1:8000";
-
 const backendBaseUrl =
   window.OPENFIRE_BACKEND_BASE_URL ||
-  backendOverride ||
-  inferredBackendBaseUrl;
+  new URLSearchParams(window.location.search).get("backend") ||
+  "http://127.0.0.1:8000";
 
 window.OPENFIRE_CONFIG = {
   runtimeMode: "demo",

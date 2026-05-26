@@ -20,29 +20,40 @@ def build_request(row_count: int = 1) -> PredictionRequest:
     row = FeatureRow(
         latitude=37.7,
         longitude=-122.4,
-        NDVI=0.3,
-        EVI=0.2,
-        NDWI=0.1,
-        NBR=0.0,
+        days_since_last_burn=9999,
+        ndvi_change_5d=0.01,
+        ndvi_change_15d=0.02,
+        ndvi_change_30d=0.03,
+        ndvi_change_60d=0.04,
+        ndwi_change_5d=-0.01,
+        ndwi_change_15d=-0.02,
+        ndwi_change_30d=-0.03,
+        ndwi_change_60d=-0.04,
+        temp_change_5d=0.5,
+        temp_change_15d=1.0,
+        temp_change_30d=1.5,
+        temp_change_60d=2.0,
+        precip_change_15d=-1.0,
+        precip_change_30d=-2.0,
+        precip_change_60d=-3.0,
+        mean_elevation=200.0,
+        mean_slope=4.0,
+        mean_cos_aspect=0.5,
+        mean_sin_aspect=0.5,
         B2=100.0,
         B3=110.0,
         B4=120.0,
         B8=130.0,
         B11=140.0,
         B12=150.0,
-        elevation=200.0,
-        slope=4.0,
-        aspect=180.0,
-        mean_ndvi_100m=0.31,
-        mean_ndvi_500m=0.29,
-        precip_7d_sum=2.0,
-        precip_30d_sum=10.0,
-        temp_7d_mean=18.0,
-        temp_30d_mean=17.0,
-        humidity_7d_mean=55.0,
-        humidity_30d_mean=60.0,
-        wind_7d_max=9.0,
-        wind_30d_max=11.0,
+        mean_NDVI=0.3,
+        mean_EVI=0.2,
+        mean_NDWI=0.1,
+        mean_NBR=0.0,
+        gridmet_temp_max=300.0,
+        gridmet_humidity_min=20.0,
+        gridmet_precip_sum=2.0,
+        gridmet_wind_max=9.0,
     )
     return PredictionRequest(rows=[row for _ in range(row_count)])
 
@@ -58,7 +69,7 @@ def test_load_model_bundle_from_local_uri_reads_metadata(tmp_path: Path) -> None
 
     assert loaded.model_source == "local"
     assert loaded.model_version == "test-bundle-v1"
-    assert loaded.feature_columns[0] == "latitude"
+    assert loaded.feature_columns[0] == "days_since_last_burn"
     assert loaded.dataset_version_info["dataset_schema_version"] == ["openfire.dataset.v1"]
 
 

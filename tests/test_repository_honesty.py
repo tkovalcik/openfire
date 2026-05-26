@@ -15,9 +15,10 @@ def test_weekly_workflow_is_manual_only() -> None:
     assert "intentionally disabled" in workflow
 
 
-def test_readme_uses_honest_demo_and_split_language() -> None:
+def test_readme_uses_honest_split_language() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "Full spatial holdout is not yet implemented in this branch." in readme
-    assert "manual-only on this branch" in readme
-    assert "frozen demo path" in readme.lower()
+    # README must disclose the temporal-only split strategy
+    assert "year-based holdout" in readme
+    # README must be explicit about geographic scope
+    assert "four Southern California counties" in readme
